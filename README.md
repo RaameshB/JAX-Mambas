@@ -18,3 +18,6 @@ Likely order of implementation:
   - [ ] Mathematical Form (still need to implement recurrent form)
   - [ ] Stability Tricks
   - [ ] Pallas Kernel
+
+### Notes:
+- Models will be called "naive" when they are implemented without their kernels
