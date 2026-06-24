@@ -21,4 +21,3 @@ Likely order of implementation:
 
 ### Notes:
 - Models will be called "naive" when they are implemented without their kernels
-- [ ] Still need to add padding support for variable length sequences
