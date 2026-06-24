@@ -11,11 +11,11 @@ Likely order of implementation:
   - [x] Stability Tricks
   - [ ] Pallas Kernel
 - [ ] [Mamba-2](https://arxiv.org/abs/2405.21060):
-  - [ ] Mathematical Form (still need to implement recurrent form)
+  - [ ] Mathematical Form
   - [ ] Stability Tricks
   - [ ] Pallas Kernel
 - [ ] [Mamba-3](https://arxiv.org/abs/2405.21060):
-  - [ ] Mathematical Form (still need to implement recurrent form)
+  - [ ] Mathematical Form
   - [ ] Stability Tricks
   - [ ] Pallas Kernel
 
