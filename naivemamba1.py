@@ -79,7 +79,7 @@ class S6(nnx.Module):
         _, xs = lax.associative_scan(S6.binary_operator, (A_bars, Bx), axis=1)
         ys = jnp.einsum("bln,bldn->bld", Cs, xs)
 
-        self.state_caches = xs[:,-1,...]
+        self.state_caches = xs[:,-1:,...]
 
         return ys if not self.complex_ssm else ys.real / 2
     def step(self, token, prev_state=None):
@@ -117,10 +117,16 @@ class Mamba(nnx.Module):
         self.proj_down = nnx.Linear(in_features=D, out_features=out_features, rngs=rngs, dtype=dtype)
         self.cache = None
 
+
     @nnx.jit
     def __call__(self, x):
         projed = self.main_proj_up(x)
         skip = self.sigma(self.skip_proj_up(x))
+
+        if self.cache_states:
+            kernel_size = self.conv.kernel.shape[0]
+            self.cache = projed[:,-(kernel_size-1):, ...]
+
         conved = self.sigma(self.conv(projed))
         ssm_out = self.s6(conved)
         muled = ssm_out * skip
@@ -142,9 +148,9 @@ class Mamba(nnx.Module):
                                    )
         else:
             cache_concat = jnp.concatenate([self.cache, token], axis=1)
-        self.cache = cache_concat[0,1:,...]
+        self.cache = cache_concat[:,1:,...]
 
-        conved = self.sigma(self.conv(cache_concat)[0,-1,...])
+        conved = self.sigma(self.conv(cache_concat)[0,-1:,...])
         ssm_out = self.s6.step(conved)
         muled = ssm_out * skip
         logits = self.proj_down(muled)
