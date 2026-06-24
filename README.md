@@ -10,6 +10,7 @@ Likely order of implementation:
   - [x] Mathematical Form
   - [x] Stability Tricks
   - [ ] Pallas Kernel
+  - [ ] LayerNorm/RMSNorm and also need to add variable length sequence padding support
 - [ ] [Mamba-2](https://arxiv.org/abs/2405.21060):
   - [ ] Mathematical Form
   - [ ] Stability Tricks
