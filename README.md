@@ -7,7 +7,7 @@ Likely order of implementation:
 
 ## Implementation Progress:
 - [ ] [Mamba](https://arxiv.org/abs/2312.00752):
-  - [ ] Mathematical Form (still need to implement recurrent form)
+  - [x] Mathematical Form
   - [x] Stability Tricks
   - [ ] Pallas Kernel
 - [ ] [Mamba-2](https://arxiv.org/abs/2405.21060):
