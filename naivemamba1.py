@@ -139,7 +139,7 @@ class Mamba(nnx.Module):
 
         if self.cache is None:
             kernel_size = self.conv.kernel.shape[0]
-            cache_concat = jnp.pad(token,
+            cache_concat = jnp.pad(projed,
                                    pad_width=(
                                         (0,0),
                                         (kernel_size-1, 0),
@@ -147,7 +147,7 @@ class Mamba(nnx.Module):
                                     )
                                    )
         else:
-            cache_concat = jnp.concatenate([self.cache, token], axis=1)
+            cache_concat = jnp.concatenate([self.cache, projed], axis=1)
         self.cache = cache_concat[:,1:,...]
 
         conved = self.sigma(self.conv(cache_concat)[0,-1:,...])
