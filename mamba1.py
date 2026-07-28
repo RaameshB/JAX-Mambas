@@ -160,21 +160,24 @@ class S6(nnx.Module):
                               ys_block_ref,
                               carry):
                 # euler approx discretization
-                delta = Delta_block_ref[...]
+                delta = Delta_block_ref[...]  # [K, D]
+                A_reg = A_smem[...]  # [D, N]
+                B_block = B_block_ref[...]  # [K, N]
+                u_block = u_block_ref[...]  # [K, D]
 
                 mulDeltaA = (
                         delta[:, :, None]
-                        * A_smem[None, :, :]
-                )
+                        * A_reg[None, :, :]
+                )  # [K, D, N]
 
                 barAs = jnp.exp(mulDeltaA)
 
                 barBs = (
                         delta[:, :, None]
-                        * B_block_ref[...][:, None, :]
-                )
+                        * B_block[:, None, :]
+                )  # [K, D, N]
 
-                Bus = barBs * u_block_ref[...][..., None]
+                Bus = barBs * u_block[:, :, None]
                 # delta_SRAM = Delta_block_ref[...]
                 # mulDeltaA = jnp.einsum("ld,dn->ldn", delta_SRAM, A_smem[...])
                 # ic(mulDeltaA.shape)
