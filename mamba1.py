@@ -7,6 +7,7 @@ import jax.experimental.pallas as pl
 from icecream import ic
 import jax.experimental.pallas.mosaic_gpu as plgpu
 
+
 class S6(nnx.Module):
     def __init__(self, rngs:nnx.Rngs, D, N:int=64, R:int=1,
                  complex_ssm:bool=False, use_euler_barB_approx:bool=True, use_log_A_stability_trick:bool=True,
@@ -188,7 +189,10 @@ class S6(nnx.Module):
                 plgpu.SMEM((D, N), A.dtype),
                 plgpu.Barrier()
             ),
-            grid_names=("batch",)
+            grid_names=("batch",),
+            compiler_params=plgpu.CompilerParams(
+                lowering_semantics=plgpu.LoweringSemantics.Lane
+            )
         )
 
         return kernel(A, Bs, Deltas, Cs, u)
