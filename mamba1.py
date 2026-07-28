@@ -162,7 +162,7 @@ class S6(nnx.Module):
                 barAs = jnp.exp(mulDeltaA)
                 barBs = jnp.einsum("ld,ln->ldn", delta_SRAM, B_block_ref[...])
                 Bus = barBs * u_block_ref[...][..., None]
-                Bus = Bus.at[0].add(barAs[0] * carry)
+                Bus = Bus.at[0].set(Bus[0] + barAs[0] * carry)
                 _, xs = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
                 ys_block_ref[...] = jnp.einsum("ln,ldn->ld", C_block_ref[...], xs)
                 return xs[-1]
