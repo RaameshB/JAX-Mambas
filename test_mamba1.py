@@ -22,3 +22,5 @@ if __name__ == "__main__":
     ic(reference_out)
 
     assert isclose(kernel_out, reference_out).all()
+
+    print("passed!")
