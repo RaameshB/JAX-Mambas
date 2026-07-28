@@ -189,7 +189,49 @@ class S6(nnx.Module):
                 mask = (jnp.arange(K) == 0)[:, None, None]
                 Bus = Bus + mask * (barAs[0] * carry)[None, :, :]
 
-                _, xs = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
+                def hillis_steele_scan(As, bs):
+                    # As, bs: [K, D, N]
+
+                    K = As.shape[0]
+                    offset = 1
+
+                    while offset < K:
+                        # Shift the previous-stage values right by `offset`.
+                        #
+                        # The affine identity is:
+                        #     A = 1
+                        #     b = 0
+                        #
+                        # so the first `offset` entries remain unchanged.
+                        shifted_As = jnp.concatenate(
+                            (
+                                jnp.ones_like(As[:offset]),
+                                As[:-offset],
+                            ),
+                            axis=0,
+                        )
+
+                        shifted_bs = jnp.concatenate(
+                            (
+                                jnp.zeros_like(bs[:offset]),
+                                bs[:-offset],
+                            ),
+                            axis=0,
+                        )
+
+                        # IMPORTANT: left/earlier prefix goes first.
+                        As, bs = S6.binary_operator(
+                            (shifted_As, shifted_bs),
+                            (As, bs),
+                        )
+
+                        offset *= 2
+
+                    return As, bs
+
+                # _, xs = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
+
+                _, xs = hillis_steele_scan(barAs, Bus)
                 ys_block_ref[...] = jnp.einsum("ln,ldn->ld", C_block_ref[...], xs)
                 return xs[-1]
 
