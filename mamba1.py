@@ -363,6 +363,7 @@ class S6(nnx.Module):
             A_bars, B_bars = self.discretize(A, Bs, Deltas)
             Bx = B_bars * x[..., jnp.newaxis]
             xs = lax.associative_scan(S6.binary_operator, (A_bars, Bx), axis=1)
+            ic(xs.shape)
             self.state_caches.value = xs[:, -1:, ...]
             ys = jnp.einsum("bln,bldn->bld", Cs, xs)
         else:
