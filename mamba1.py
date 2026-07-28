@@ -120,173 +120,28 @@ class S6(nnx.Module):
         K = self.kernel_seq_len
 
         chunk_count = (L + K - 1) // K
-        #
-        # def mosiac_kernel(A_ref, B_ref, Delta_ref, C_ref, u_ref,
-        #                   ys_ref, state_ref,
-        #                   A_smem, A_barrier):
-        #     batch_idx = lax.axis_index("batch")
-        #     plgpu.copy_gmem_to_smem(A_ref, A_smem, A_barrier)
-        #     plgpu.barrier_wait(A_barrier)
-        #
-        #     B_spec = plgpu.BlockSpec(
-        #         block_shape=(None, K, N),
-        #         index_map=lambda q: (batch_idx, q, 0),
-        #     )
-        #
-        #     Delta_spec = plgpu.BlockSpec(
-        #         block_shape=(None, K, D),
-        #         index_map=lambda q: (batch_idx, q, 0),
-        #     )
-        #
-        #     C_spec = plgpu.BlockSpec(
-        #         block_shape=(None, K, N),
-        #         index_map=lambda q: (batch_idx, q, 0),
-        #     )
-        #
-        #     u_spec = plgpu.BlockSpec(
-        #         block_shape=(None, K, D),
-        #         index_map=lambda q: (batch_idx, q, 0),
-        #     )
-        #
-        #     y_spec = plgpu.BlockSpec(
-        #         block_shape=(None, K, D),
-        #         index_map=lambda q: (batch_idx, q, 0),
-        #     )
-        #
-        #
-        #     # def pipeline_body(_,
-        #     #                   B_block_ref,Delta_block_ref,
-        #     #                   C_block_ref,u_block_ref,
-        #     #                   ys_block_ref,
-        #     #                   carry):
-        #     #     # euler approx discretization
-        #     #     delta = Delta_block_ref[...]  # [K, D]
-        #     #     A_reg = A_smem[...]  # [D, N]
-        #     #     B_block = B_block_ref[...]  # [K, N]
-        #     #     u_block = u_block_ref[...]  # [K, D]
-        #     #
-        #     #     mulDeltaA = (
-        #     #             delta[:, :, None]
-        #     #             * A_reg[None, :, :]
-        #     #     )  # [K, D, N]
-        #     #
-        #     #     barAs = jnp.exp(mulDeltaA)
-        #     #
-        #     #     barBs = (
-        #     #             delta[:, :, None]
-        #     #             * B_block[:, None, :]
-        #     #     )  # [K, D, N]
-        #     #
-        #     #     Bus = barBs * u_block[:, :, None]
-        #     #     # delta_SRAM = Delta_block_ref[...]
-        #     #     # mulDeltaA = jnp.einsum("ld,dn->ldn", delta_SRAM, A_smem[...])
-        #     #     # ic(mulDeltaA.shape)
-        #     #     # barAs = jnp.exp(mulDeltaA)
-        #     #     # barBs = jnp.einsum("ld,ln->ldn", delta_SRAM, B_block_ref[...])
-        #     #     # Bus = barBs * u_block_ref[...][..., None]
-        #     #     #Bus = Bus.at[0].set(Bus[0] + barAs[0] * carry)
-        #     #
-        #     #     mask = (jnp.arange(K) == 0)[:, None, None]
-        #     #     Bus = Bus + mask * (barAs[0] * carry)[None, :, :]
-        #     #
-        #     #     def hillis_steele_scan(As, bs):
-        #     #         # As, bs: [K, D, N]
-        #     #
-        #     #         K = As.shape[0]
-        #     #         offset = 1
-        #     #
-        #     #         while offset < K:
-        #     #             # Shift the previous-stage values right by `offset`.
-        #     #             #
-        #     #             # The affine identity is:
-        #     #             #     A = 1
-        #     #             #     b = 0
-        #     #             #
-        #     #             # so the first `offset` entries remain unchanged.
-        #     #             shifted_As = jnp.concatenate(
-        #     #                 (
-        #     #                     jnp.ones_like(As[:offset]),
-        #     #                     As[:-offset],
-        #     #                 ),
-        #     #                 axis=0,
-        #     #             )
-        #     #
-        #     #             shifted_bs = jnp.concatenate(
-        #     #                 (
-        #     #                     jnp.zeros_like(bs[:offset]),
-        #     #                     bs[:-offset],
-        #     #                 ),
-        #     #                 axis=0,
-        #     #             )
-        #     #
-        #     #             # IMPORTANT: left/earlier prefix goes first.
-        #     #             As, bs = S6.binary_operator(
-        #     #                 (shifted_As, shifted_bs),
-        #     #                 (As, bs),
-        #     #             )
-        #     #
-        #     #             offset *= 2
-        #     #
-        #     #         return As, bs
-        #     def pipeline_body(
-        #             _,
-        #             B_block_ref,
-        #             Delta_block_ref,
-        #             C_block_ref,
-        #             u_block_ref,
-        #             ys_block_ref,
-        #             carry,
-        #     ):
-        #         ys_block_ref[...] = u_block_ref[...]
-        #
-        #         return carry
-        #
-        #         # _, xs = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
-        #
-        #         # _, xs = hillis_steele_scan(barAs, Bus)
-        #         xs = Bus
-        #
-        #         C_block = C_block_ref[...]  # [K, N]
-        #
-        #         ys = jnp.sum(
-        #             C_block[:, None, :] * xs,  # [K, D, N]
-        #             axis=-1,
-        #         )  # [K, D]
-        #
-        #         ys_block_ref[...] = ys
-        #         # ys_block_ref[...] = jnp.einsum("ln,ldn->ld", C_block_ref[...], xs)
-        #         return xs[-1]
-        #
-        #     pipeline = plgpu.emit_pipeline(
-        #         body=pipeline_body,
-        #         grid=(chunk_count,),
-        #         init_carry=jnp.zeros((D,N), dtype=A.dtype),
-        #         in_specs=(B_spec, Delta_spec, C_spec, u_spec),
-        #         out_specs=(y_spec,)
-        #     )
-        #     last_state = pipeline(B_ref, Delta_ref, C_ref, u_ref, ys_ref)
-        #     state_ref[batch_idx, ...] = last_state
-        #
-        # kernel = plgpu.kernel(
-        #     body=mosiac_kernel,
-        #     out_type=(
-        #         jax.ShapeDtypeStruct.like(u),
-        #         jax.ShapeDtypeStruct((B,D,N), A.dtype)
-        #     ),
-        #     grid=(B,),
-        #     scratch_types=(
-        #         plgpu.SMEM((D, N), A.dtype),
-        #         plgpu.Barrier()
-        #     ),
-        #     grid_names=("batch",),
-        #     # compiler_params=plgpu.CompilerParams(
-        #     #     lowering_semantics=plgpu.LoweringSemantics.Lane
-        #     # )
-        # )
-        #
-        # return kernel(A, Bs, Deltas, Cs, u)
-        def mosaic_kernel(u_ref, ys_ref):
+
+        def mosiac_kernel(A_ref, B_ref, Delta_ref, C_ref, u_ref,
+                          ys_ref, state_ref,
+                          A_smem, A_barrier):
             batch_idx = lax.axis_index("batch")
+            plgpu.copy_gmem_to_smem(A_ref, A_smem, A_barrier)
+            plgpu.barrier_wait(A_barrier)
+
+            B_spec = plgpu.BlockSpec(
+                block_shape=(None, K, N),
+                index_map=lambda q: (batch_idx, q, 0),
+            )
+
+            Delta_spec = plgpu.BlockSpec(
+                block_shape=(None, K, D),
+                index_map=lambda q: (batch_idx, q, 0),
+            )
+
+            C_spec = plgpu.BlockSpec(
+                block_shape=(None, K, N),
+                index_map=lambda q: (batch_idx, q, 0),
+            )
 
             u_spec = plgpu.BlockSpec(
                 block_shape=(None, K, D),
@@ -298,26 +153,138 @@ class S6(nnx.Module):
                 index_map=lambda q: (batch_idx, q, 0),
             )
 
-            def pipeline_body(_, u_block_ref, ys_block_ref):
-                ys_block_ref[...] = u_block_ref[...]
+
+            def pipeline_body(_,
+                              B_block_ref,Delta_block_ref,
+                              C_block_ref,u_block_ref,
+                              ys_block_ref,
+                              carry):
+                # euler approx discretization
+                delta = Delta_block_ref[...]  # [K, D]
+                A_reg = A_smem[...]  # [D, N]
+                B_block = B_block_ref[...]  # [K, N]
+                u_block = u_block_ref[...]  # [K, D]
+
+                mulDeltaA = (
+                        delta[:, :, None]
+                        * A_reg[None, :, :]
+                )  # [K, D, N]
+
+                barAs = jnp.exp(mulDeltaA)
+
+                barBs = (
+                        delta[:, :, None]
+                        * B_block[:, None, :]
+                )  # [K, D, N]
+
+                Bus = barBs * u_block[:, :, None]
+                # delta_SRAM = Delta_block_ref[...]
+                # mulDeltaA = jnp.einsum("ld,dn->ldn", delta_SRAM, A_smem[...])
+                # ic(mulDeltaA.shape)
+                # barAs = jnp.exp(mulDeltaA)
+                # barBs = jnp.einsum("ld,ln->ldn", delta_SRAM, B_block_ref[...])
+                # Bus = barBs * u_block_ref[...][..., None]
+                #Bus = Bus.at[0].set(Bus[0] + barAs[0] * carry)
+
+                mask = (jnp.arange(K) == 0)[:, None, None]
+                Bus = Bus + mask * (barAs[0] * carry)[None, :, :]
+
+                def hillis_steele_scan(As, bs):
+                    # As, bs: [K, D, N]
+
+                    K = As.shape[0]
+                    offset = 1
+
+                    while offset < K:
+                        # Shift the previous-stage values right by `offset`.
+                        #
+                        # The affine identity is:
+                        #     A = 1
+                        #     b = 0
+                        #
+                        # so the first `offset` entries remain unchanged.
+                        shifted_As = jnp.concatenate(
+                            (
+                                jnp.ones_like(As[:offset]),
+                                As[:-offset],
+                            ),
+                            axis=0,
+                        )
+
+                        shifted_bs = jnp.concatenate(
+                            (
+                                jnp.zeros_like(bs[:offset]),
+                                bs[:-offset],
+                            ),
+                            axis=0,
+                        )
+
+                        # IMPORTANT: left/earlier prefix goes first.
+                        As, bs = S6.binary_operator(
+                            (shifted_As, shifted_bs),
+                            (As, bs),
+                        )
+
+                        offset *= 2
+
+                    return As, bs
+            # def pipeline_body(
+            #         _,
+            #         B_block_ref,
+            #         Delta_block_ref,
+            #         C_block_ref,
+            #         u_block_ref,
+            #         ys_block_ref,
+            #         carry,
+            # ):
+            #     ys_block_ref[...] = u_block_ref[...]
+            #
+            #     return carry
+
+                # _, xs = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
+
+                # _, xs = hillis_steele_scan(barAs, Bus)
+                xs = Bus
+
+                C_block = C_block_ref[...]  # [K, N]
+
+                ys = jnp.sum(
+                    C_block[:, None, :] * xs,  # [K, D, N]
+                    axis=-1,
+                )  # [K, D]
+
+                ys_block_ref[...] = ys
+                # ys_block_ref[...] = jnp.einsum("ln,ldn->ld", C_block_ref[...], xs)
+                return xs[-1]
 
             pipeline = plgpu.emit_pipeline(
                 body=pipeline_body,
                 grid=(chunk_count,),
-                in_specs=(u_spec,),
-                out_specs=(y_spec,),
+                init_carry=jnp.zeros((D,N), dtype=A.dtype),
+                in_specs=(B_spec, Delta_spec, C_spec, u_spec),
+                out_specs=(y_spec,)
             )
-
-            pipeline(u_ref, ys_ref)
+            last_state = pipeline(B_ref, Delta_ref, C_ref, u_ref, ys_ref)
+            state_ref[batch_idx, ...] = last_state
 
         kernel = plgpu.kernel(
-            body=mosaic_kernel,
-            out_type=jax.ShapeDtypeStruct.like(u),
+            body=mosiac_kernel,
+            out_type=(
+                jax.ShapeDtypeStruct.like(u),
+                jax.ShapeDtypeStruct((B,D,N), A.dtype)
+            ),
             grid=(B,),
+            scratch_types=(
+                plgpu.SMEM((D, N), A.dtype),
+                plgpu.Barrier()
+            ),
             grid_names=("batch",),
+            # compiler_params=plgpu.CompilerParams(
+            #     lowering_semantics=plgpu.LoweringSemantics.Lane
+            # )
         )
 
-        return kernel(u)
+        return kernel(A, Bs, Deltas, Cs, u)
 
 
 
