@@ -211,9 +211,9 @@ class S6(nnx.Module):
                 plgpu.Barrier()
             ),
             grid_names=("batch",),
-            compiler_params=plgpu.CompilerParams(
-                lowering_semantics=plgpu.LoweringSemantics.Lane
-            )
+            # compiler_params=plgpu.CompilerParams(
+            #     lowering_semantics=plgpu.LoweringSemantics.Lane
+            # )
         )
 
         return kernel(A, Bs, Deltas, Cs, u)
