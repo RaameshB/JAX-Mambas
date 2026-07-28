@@ -188,8 +188,7 @@ class S6(nnx.Module):
                 plgpu.SMEM((D, N), A.dtype),
                 plgpu.Barrier()
             ),
-            grid_names=("batch",),
-            interpret=True
+            grid_names=("batch",)
         )
 
         return kernel(A, Bs, Deltas, Cs, u)
