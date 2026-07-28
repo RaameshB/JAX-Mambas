@@ -4,7 +4,7 @@ if __name__ == "__main__":
     from jax.numpy import isclose
     from icecream import ic
 
-    D = 4
+    D = 16
     N = 8
     K = 32
     L = 32
