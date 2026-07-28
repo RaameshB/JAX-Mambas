@@ -14,7 +14,7 @@ if __name__ == "__main__":
     D = 16
     N = 8
     K = 32
-    L = 32
+    L = 4096
     B = 3
 
     WARMUP = 5
