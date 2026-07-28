@@ -6,8 +6,8 @@ if __name__ == "__main__":
 
     D = 4
     N = 8
-    K = 8
-    L = 128
+    K = 32
+    L = 32
 
     rngs = Rngs(1)
     test_inp = rngs.uniform((3, L, D))
