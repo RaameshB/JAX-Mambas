@@ -269,11 +269,11 @@ jax-cuda13-pjrt==0.10.2 \
     --hash=sha256:a97e9cabe0e21d8dbcc70bd909ca1c34cd546d3ce2d94b4cd907a8d4f6179f6a \
     --hash=sha256:b28f4940d09405ece084e50c91634f4bb1d43a8497b9d734f40007ee07281aec
     # via jax-cuda13-plugin
-jax-cuda13-plugin==0.10.2 \
-    --hash=sha256:0325f77b0cdd9ad083bb0451cf29d4ac6c684b8d1ec2f01d1bebe825bc430c1c \
-    --hash=sha256:3a14fa5531b1ec3689726714df450d32d09e930a9fe8a6c10bdb095b88ebd9e8 \
-    --hash=sha256:661d3dd23b9aa8fa86647472e7b1303460f4643ee516fe707912e5ab90dfd3ff \
-    --hash=sha256:dbc795a2021e07d299cd5d305554c3d5f48c5951fb467e05cb47e1dba02b2167
+jax-cuda13-plugin==0.10.2 #\
+#    --hash=sha256:0325f77b0cdd9ad083bb0451cf29d4ac6c684b8d1ec2f01d1bebe825bc430c1c \
+#    --hash=sha256:3a14fa5531b1ec3689726714df450d32d09e930a9fe8a6c10bdb095b88ebd9e8 \
+#    --hash=sha256:661d3dd23b9aa8fa86647472e7b1303460f4643ee516fe707912e5ab90dfd3ff \
+#    --hash=sha256:dbc795a2021e07d299cd5d305554c3d5f48c5951fb467e05cb47e1dba02b2167
     # via jax
 jaxlib==0.10.2 \
     --hash=sha256:5a2ac7aed7c4e661f67600bbcdec9e589151c1efec91f4cdb8d484af1a45c895 \
