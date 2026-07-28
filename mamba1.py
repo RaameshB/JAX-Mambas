@@ -6,6 +6,9 @@ from jax import lax
 import jax.experimental.pallas as pl
 from icecream import ic
 import jax.experimental.pallas.mosaic_gpu as plgpu
+plgpu.CompilerParams(
+    lowering_semantics=plgpu.LoweringSemantics.Lane
+)
 
 
 class S6(nnx.Module):
