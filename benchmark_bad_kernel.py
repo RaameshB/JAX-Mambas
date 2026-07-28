@@ -8,6 +8,9 @@ if __name__ == "__main__":
 
     from mamba1 import S6
 
+    from icecream import ic
+    ic.disable()
+
     D = 16
     N = 8
     K = 32
