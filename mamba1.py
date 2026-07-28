@@ -83,34 +83,34 @@ class S6(nnx.Module):
         At, ht = Aht
         return At * At_prev, At * ht_prev + ht
 
-    # def euler_approx_kernel(A_ref, B_block_ref,
-    #            Delta_block_ref,
-    #            u_block_ref, A_muls_block_ref, xs_block_ref):
-    #     delta_SRAM = Delta_block_ref[...]
-    #     mulDeltaA = jnp.einsum("ld,dn->ldn", delta_SRAM, A_ref[...])
-    #     ic(mulDeltaA.shape)
-    #     barAs = jnp.exp(mulDeltaA)
-    #     barBs = jnp.einsum("ld,ln->ldn", delta_SRAM, B_block_ref[...])
-    #     Bus = barBs * u_block_ref[...][..., None]
-    #     As, xs = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
-    #     ic(As.shape)
-    #     ic(xs.shape)
-    #     A_muls_block_ref[...], xs_block_ref[...] = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
-    #
-    # def zoh_kernel(A_ref, B_block_ref,
-    #            Delta_block_ref,
-    #            u_block_ref, A_muls_block_ref, xs_block_ref):
-    #     delta_SRAM = Delta_block_ref[...]
-    #     A_SRAM = A_ref[...]
-    #     mulDeltaA = jnp.einsum("ld,dn->ldn", delta_SRAM, A_SRAM)
-    #     ic(mulDeltaA.shape)
-    #     barAs = jnp.exp(mulDeltaA)
-    #     barBs =  jnp.expm1(mulDeltaA) * jnp.einsum("dn,ln->ldn", jnp.reciprocal(A_SRAM), B_block_ref[...])
-    #     Bus = barBs * u_block_ref[...][..., None]
-    #     As, xs = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
-    #     ic(As.shape)
-    #     ic(xs.shape)
-    #     A_muls_block_ref[...], xs_block_ref[...] = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
+    def euler_approx_kernel(A_ref, B_block_ref,
+               Delta_block_ref,
+               u_block_ref, A_muls_block_ref, xs_block_ref):
+        delta_SRAM = Delta_block_ref[...]
+        mulDeltaA = jnp.einsum("ld,dn->ldn", delta_SRAM, A_ref[...])
+        ic(mulDeltaA.shape)
+        barAs = jnp.exp(mulDeltaA)
+        barBs = jnp.einsum("ld,ln->ldn", delta_SRAM, B_block_ref[...])
+        Bus = barBs * u_block_ref[...][..., None]
+        As, xs = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
+        ic(As.shape)
+        ic(xs.shape)
+        A_muls_block_ref[...], xs_block_ref[...] = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
+
+    def zoh_kernel(A_ref, B_block_ref,
+               Delta_block_ref,
+               u_block_ref, A_muls_block_ref, xs_block_ref):
+        delta_SRAM = Delta_block_ref[...]
+        A_SRAM = A_ref[...]
+        mulDeltaA = jnp.einsum("ld,dn->ldn", delta_SRAM, A_SRAM)
+        ic(mulDeltaA.shape)
+        barAs = jnp.exp(mulDeltaA)
+        barBs =  jnp.expm1(mulDeltaA) * jnp.einsum("dn,ln->ldn", jnp.reciprocal(A_SRAM), B_block_ref[...])
+        Bus = barBs * u_block_ref[...][..., None]
+        As, xs = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
+        ic(As.shape)
+        ic(xs.shape)
+        A_muls_block_ref[...], xs_block_ref[...] = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
 
 
     def apply_with_mosaic_kernel(self, A, Bs, Deltas, Cs, u):
@@ -288,62 +288,62 @@ class S6(nnx.Module):
 
 
 
-    # def apply_with_kernel(self, A, Bs, Deltas, u):
-    #     needs_padding = u.shape[1] % self.kernel_seq_len != 0
-    #     if needs_padding:
-    #         pad_len = (u.shape[1] // self.kernel_seq_len + 1) * self.kernel_seq_len - u.shape[1]
-    #         pad_dims = (
-    #             (0,0),
-    #             (0,pad_len),
-    #             (0,0),
-    #         )
-    #         Bs = jnp.pad(Bs, pad_dims)
-    #         Deltas = jnp.pad(Deltas, pad_dims)
-    #         u = jnp.pad(u, pad_dims)
-    #     block_count = u.shape[1] // self.kernel_seq_len
-    #     ic(block_count)
-    #     B_split = jnp.stack(jnp.split(Bs, block_count, axis=1)).transpose((1,0,2,3))
-    #     ic(B_split.shape)
-    #     Delta_split = jnp.stack(jnp.split(Deltas, block_count, axis=1)).transpose((1,0,2,3))
-    #     ic(Delta_split.shape)
-    #     u_split = jnp.stack(jnp.split(u, block_count, axis=1)).transpose((1,0,2,3))
-    #     ic(u_split.shape)
-    #     if self.euler_barB_approx:
-    #         block_As, block_zero_init_xs = nnx.vmap(
-    #             lambda B, Delta, u: nnx.vmap(
-    #                 lambda B_block, Delta_block, u_block: pl.pallas_call(
-    #                     kernel=S6.euler_approx_kernel,
-    #                     out_shape=(
-    #                         jax.ShapeDtypeStruct((self.kernel_seq_len, u_block.shape[1], B_block.shape[1]), jnp.float32),
-    #                         jax.ShapeDtypeStruct((self.kernel_seq_len, u_block.shape[1], B_block.shape[1]), jnp.float32)
-    #                     ),
-    #                     interpret=True
-    #                 )(A.astype(jnp.float32), B_block, Delta_block, u_block)
-    #             )(B, Delta, u)
-    #         )(B_split, Delta_split, u_split)
-    #     else:
-    #         block_As, block_zero_init_xs = nnx.vmap(
-    #             lambda B, Delta, u: nnx.vmap(
-    #                 lambda B_block, Delta_block, u_block: pl.pallas_call(
-    #                     kernel=S6.zoh_kernel,
-    #                     out_shape=(
-    #                         jax.ShapeDtypeStruct((self.kernel_seq_len, u_block.shape[1], B_block.shape[1]),
-    #                                              jnp.float32),
-    #                         jax.ShapeDtypeStruct((self.kernel_seq_len, u_block.shape[1], B_block.shape[1]), jnp.float32)
-    #                     ),
-    #                     interpret=True
-    #                 )(A.astype(jnp.float32), B_block, Delta_block, u_block)
-    #             )(B, Delta, u)
-    #         )(B_split, Delta_split, u_split)
-    #     ic(block_As.shape)
-    #     _, exiting_states = lax.associative_scan(S6.binary_operator, (block_As[:,:,-1], block_zero_init_xs[:,:,-1]), axis=1)
-    #     ic(exiting_states.shape)
-    #     entering_states = jnp.pad(exiting_states, ((0,0),(1,0),(0,0),(0,0)))[:,:-1]
-    #     ic(entering_states.shape)
-    #     macro_scanned_xs = block_As * entering_states[:,:, None] + block_zero_init_xs
-    #     xs = jnp.reshape(macro_scanned_xs, u.shape + (Bs.shape[2],))
-    #     if needs_padding: xs = xs[:,:-pad_len]
-    #     return xs
+    def apply_with_kernel(self, A, Bs, Deltas, u):
+        needs_padding = u.shape[1] % self.kernel_seq_len != 0
+        if needs_padding:
+            pad_len = (u.shape[1] // self.kernel_seq_len + 1) * self.kernel_seq_len - u.shape[1]
+            pad_dims = (
+                (0,0),
+                (0,pad_len),
+                (0,0),
+            )
+            Bs = jnp.pad(Bs, pad_dims)
+            Deltas = jnp.pad(Deltas, pad_dims)
+            u = jnp.pad(u, pad_dims)
+        block_count = u.shape[1] // self.kernel_seq_len
+        ic(block_count)
+        B_split = jnp.stack(jnp.split(Bs, block_count, axis=1)).transpose((1,0,2,3))
+        ic(B_split.shape)
+        Delta_split = jnp.stack(jnp.split(Deltas, block_count, axis=1)).transpose((1,0,2,3))
+        ic(Delta_split.shape)
+        u_split = jnp.stack(jnp.split(u, block_count, axis=1)).transpose((1,0,2,3))
+        ic(u_split.shape)
+        if self.euler_barB_approx:
+            block_As, block_zero_init_xs = nnx.vmap(
+                lambda B, Delta, u: nnx.vmap(
+                    lambda B_block, Delta_block, u_block: pl.pallas_call(
+                        kernel=S6.euler_approx_kernel,
+                        out_shape=(
+                            jax.ShapeDtypeStruct((self.kernel_seq_len, u_block.shape[1], B_block.shape[1]), jnp.float32),
+                            jax.ShapeDtypeStruct((self.kernel_seq_len, u_block.shape[1], B_block.shape[1]), jnp.float32)
+                        ),
+                        interpret=True
+                    )(A.astype(jnp.float32), B_block, Delta_block, u_block)
+                )(B, Delta, u)
+            )(B_split, Delta_split, u_split)
+        else:
+            block_As, block_zero_init_xs = nnx.vmap(
+                lambda B, Delta, u: nnx.vmap(
+                    lambda B_block, Delta_block, u_block: pl.pallas_call(
+                        kernel=S6.zoh_kernel,
+                        out_shape=(
+                            jax.ShapeDtypeStruct((self.kernel_seq_len, u_block.shape[1], B_block.shape[1]),
+                                                 jnp.float32),
+                            jax.ShapeDtypeStruct((self.kernel_seq_len, u_block.shape[1], B_block.shape[1]), jnp.float32)
+                        ),
+                        interpret=True
+                    )(A.astype(jnp.float32), B_block, Delta_block, u_block)
+                )(B, Delta, u)
+            )(B_split, Delta_split, u_split)
+        ic(block_As.shape)
+        _, exiting_states = lax.associative_scan(S6.binary_operator, (block_As[:,:,-1], block_zero_init_xs[:,:,-1]), axis=1)
+        ic(exiting_states.shape)
+        entering_states = jnp.pad(exiting_states, ((0,0),(1,0),(0,0),(0,0)))[:,:-1]
+        ic(entering_states.shape)
+        macro_scanned_xs = block_As * entering_states[:,:, None] + block_zero_init_xs
+        xs = jnp.reshape(macro_scanned_xs, u.shape + (Bs.shape[2],))
+        if needs_padding: xs = xs[:,:-pad_len]
+        return xs
 
 
     # @nnx.jit
@@ -367,8 +367,9 @@ class S6(nnx.Module):
             ys = jnp.einsum("bln,bldn->bld", Cs, xs)
         else:
             # xs = self.apply_with_kernel(A, Bs, Deltas, x)
-            ys, last_states = self.apply_with_mosaic_kernel(A, Bs, Deltas, Cs, x)
-            self.state_caches.value = last_states
+            _, xs = self.apply_with_kernel(A, Bs, Deltas, x)
+            self.state_caches.value = xs[:, -1:, ...]
+            ys = jnp.einsum("bln,bldn->bld", Cs, xs)
         ic(xs.shape)
 
         return ys if not self.complex_ssm else ys.real
