@@ -231,7 +231,8 @@ class S6(nnx.Module):
 
                 # _, xs = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
 
-                _, xs = hillis_steele_scan(barAs, Bus)
+                # _, xs = hillis_steele_scan(barAs, Bus)
+                xs = Bus
 
                 C_block = C_block_ref[...]  # [K, N]
 
