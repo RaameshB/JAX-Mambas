@@ -232,7 +232,16 @@ class S6(nnx.Module):
                 # _, xs = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
 
                 _, xs = hillis_steele_scan(barAs, Bus)
-                ys_block_ref[...] = jnp.einsum("ln,ldn->ld", C_block_ref[...], xs)
+
+                C_block = C_block_ref[...]  # [K, N]
+
+                ys = jnp.sum(
+                    C_block[:, None, :] * xs,  # [K, D, N]
+                    axis=-1,
+                )  # [K, D]
+
+                ys_block_ref[...] = ys
+                # ys_block_ref[...] = jnp.einsum("ln,ldn->ld", C_block_ref[...], xs)
                 return xs[-1]
 
             pipeline = plgpu.emit_pipeline(
