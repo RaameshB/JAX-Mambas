@@ -154,80 +154,92 @@ class S6(nnx.Module):
             )
 
 
-            def pipeline_body(_,
-                              B_block_ref,Delta_block_ref,
-                              C_block_ref,u_block_ref,
-                              ys_block_ref,
-                              carry):
-                # euler approx discretization
-                delta = Delta_block_ref[...]  # [K, D]
-                A_reg = A_smem[...]  # [D, N]
-                B_block = B_block_ref[...]  # [K, N]
-                u_block = u_block_ref[...]  # [K, D]
+            # def pipeline_body(_,
+            #                   B_block_ref,Delta_block_ref,
+            #                   C_block_ref,u_block_ref,
+            #                   ys_block_ref,
+            #                   carry):
+            #     # euler approx discretization
+            #     delta = Delta_block_ref[...]  # [K, D]
+            #     A_reg = A_smem[...]  # [D, N]
+            #     B_block = B_block_ref[...]  # [K, N]
+            #     u_block = u_block_ref[...]  # [K, D]
+            #
+            #     mulDeltaA = (
+            #             delta[:, :, None]
+            #             * A_reg[None, :, :]
+            #     )  # [K, D, N]
+            #
+            #     barAs = jnp.exp(mulDeltaA)
+            #
+            #     barBs = (
+            #             delta[:, :, None]
+            #             * B_block[:, None, :]
+            #     )  # [K, D, N]
+            #
+            #     Bus = barBs * u_block[:, :, None]
+            #     # delta_SRAM = Delta_block_ref[...]
+            #     # mulDeltaA = jnp.einsum("ld,dn->ldn", delta_SRAM, A_smem[...])
+            #     # ic(mulDeltaA.shape)
+            #     # barAs = jnp.exp(mulDeltaA)
+            #     # barBs = jnp.einsum("ld,ln->ldn", delta_SRAM, B_block_ref[...])
+            #     # Bus = barBs * u_block_ref[...][..., None]
+            #     #Bus = Bus.at[0].set(Bus[0] + barAs[0] * carry)
+            #
+            #     mask = (jnp.arange(K) == 0)[:, None, None]
+            #     Bus = Bus + mask * (barAs[0] * carry)[None, :, :]
+            #
+            #     def hillis_steele_scan(As, bs):
+            #         # As, bs: [K, D, N]
+            #
+            #         K = As.shape[0]
+            #         offset = 1
+            #
+            #         while offset < K:
+            #             # Shift the previous-stage values right by `offset`.
+            #             #
+            #             # The affine identity is:
+            #             #     A = 1
+            #             #     b = 0
+            #             #
+            #             # so the first `offset` entries remain unchanged.
+            #             shifted_As = jnp.concatenate(
+            #                 (
+            #                     jnp.ones_like(As[:offset]),
+            #                     As[:-offset],
+            #                 ),
+            #                 axis=0,
+            #             )
+            #
+            #             shifted_bs = jnp.concatenate(
+            #                 (
+            #                     jnp.zeros_like(bs[:offset]),
+            #                     bs[:-offset],
+            #                 ),
+            #                 axis=0,
+            #             )
+            #
+            #             # IMPORTANT: left/earlier prefix goes first.
+            #             As, bs = S6.binary_operator(
+            #                 (shifted_As, shifted_bs),
+            #                 (As, bs),
+            #             )
+            #
+            #             offset *= 2
+            #
+            #         return As, bs
+            def pipeline_body(
+                    _,
+                    B_block_ref,
+                    Delta_block_ref,
+                    C_block_ref,
+                    u_block_ref,
+                    ys_block_ref,
+                    carry,
+            ):
+                ys_block_ref[...] = u_block_ref[...]
 
-                mulDeltaA = (
-                        delta[:, :, None]
-                        * A_reg[None, :, :]
-                )  # [K, D, N]
-
-                barAs = jnp.exp(mulDeltaA)
-
-                barBs = (
-                        delta[:, :, None]
-                        * B_block[:, None, :]
-                )  # [K, D, N]
-
-                Bus = barBs * u_block[:, :, None]
-                # delta_SRAM = Delta_block_ref[...]
-                # mulDeltaA = jnp.einsum("ld,dn->ldn", delta_SRAM, A_smem[...])
-                # ic(mulDeltaA.shape)
-                # barAs = jnp.exp(mulDeltaA)
-                # barBs = jnp.einsum("ld,ln->ldn", delta_SRAM, B_block_ref[...])
-                # Bus = barBs * u_block_ref[...][..., None]
-                #Bus = Bus.at[0].set(Bus[0] + barAs[0] * carry)
-
-                mask = (jnp.arange(K) == 0)[:, None, None]
-                Bus = Bus + mask * (barAs[0] * carry)[None, :, :]
-
-                def hillis_steele_scan(As, bs):
-                    # As, bs: [K, D, N]
-
-                    K = As.shape[0]
-                    offset = 1
-
-                    while offset < K:
-                        # Shift the previous-stage values right by `offset`.
-                        #
-                        # The affine identity is:
-                        #     A = 1
-                        #     b = 0
-                        #
-                        # so the first `offset` entries remain unchanged.
-                        shifted_As = jnp.concatenate(
-                            (
-                                jnp.ones_like(As[:offset]),
-                                As[:-offset],
-                            ),
-                            axis=0,
-                        )
-
-                        shifted_bs = jnp.concatenate(
-                            (
-                                jnp.zeros_like(bs[:offset]),
-                                bs[:-offset],
-                            ),
-                            axis=0,
-                        )
-
-                        # IMPORTANT: left/earlier prefix goes first.
-                        As, bs = S6.binary_operator(
-                            (shifted_As, shifted_bs),
-                            (As, bs),
-                        )
-
-                        offset *= 2
-
-                    return As, bs
+                return carry
 
                 # _, xs = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
 
