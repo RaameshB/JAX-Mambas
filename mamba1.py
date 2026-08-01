@@ -3,22 +3,16 @@ from flax import nnx
 import jax.numpy as jnp
 import jax.random as jrand
 from jax import lax
-import jax.experimental.pallas as pl
 from icecream import ic
-import jax.experimental.pallas.mosaic_gpu as plgpu
-plgpu.CompilerParams(
-    lowering_semantics=plgpu.LoweringSemantics.Lane
-)
+
 
 
 class S6(nnx.Module):
     def __init__(self, rngs:nnx.Rngs, D, N:int=64, R:int=1,
                  complex_ssm:bool=False, use_euler_barB_approx:bool=True, use_log_A_stability_trick:bool=True,
-                 use_bf16=False, cache_states=True,
-                 use_kernel=False, kernel_seq_len=128):
+                 use_bf16=False):
 
-        self.cache_states = cache_states
-
+        self.N = N
         self.euler_barB_approx = use_euler_barB_approx
         self.log_A = use_log_A_stability_trick
         real_dtype = jnp.float32 if not use_bf16 else jnp.bfloat16
@@ -60,11 +54,12 @@ class S6(nnx.Module):
 
         self.complex_ssm = complex_ssm
 
-        self.state_caches = nnx.Variable
+        self.has_cache = False
 
-        self.use_kernel = use_kernel
-
-        self.kernel_seq_len = kernel_seq_len
+    def initialize_state(self, input_shape, state_init_value=None):
+        cache_shape = (input_shape[0],) + input_shape[2:] + (self.N,)
+        self.state_cache = nnx.Variable(jnp.zeros(cache_shape) if state_init_value is None else state_init_value)
+        self.has_cache = True
 
     def discretize(self, A, Bs, Deltas):
         mulDeltaA = jnp.einsum("bld,dn->bldn", Deltas, A)
@@ -83,310 +78,40 @@ class S6(nnx.Module):
         At, ht = Aht
         return At * At_prev, At * ht_prev + ht
 
-    def euler_approx_kernel(A_ref, B_block_ref,
-               Delta_block_ref,
-               u_block_ref, A_muls_block_ref, xs_block_ref):
-        delta_SRAM = Delta_block_ref[...]
-        mulDeltaA = jnp.einsum("ld,dn->ldn", delta_SRAM, A_ref[...])
-        ic(mulDeltaA.shape)
-        barAs = jnp.exp(mulDeltaA)
-        barBs = jnp.einsum("ld,ln->ldn", delta_SRAM, B_block_ref[...])
-        Bus = barBs * u_block_ref[...][..., None]
-        As, xs = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
-        ic(As.shape)
-        ic(xs.shape)
-        A_muls_block_ref[...], xs_block_ref[...] = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
-
-    def zoh_kernel(A_ref, B_block_ref,
-               Delta_block_ref,
-               u_block_ref, A_muls_block_ref, xs_block_ref):
-        delta_SRAM = Delta_block_ref[...]
-        A_SRAM = A_ref[...]
-        mulDeltaA = jnp.einsum("ld,dn->ldn", delta_SRAM, A_SRAM)
-        ic(mulDeltaA.shape)
-        barAs = jnp.exp(mulDeltaA)
-        barBs =  jnp.expm1(mulDeltaA) * jnp.einsum("dn,ln->ldn", jnp.reciprocal(A_SRAM), B_block_ref[...])
-        Bus = barBs * u_block_ref[...][..., None]
-        As, xs = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
-        ic(As.shape)
-        ic(xs.shape)
-        A_muls_block_ref[...], xs_block_ref[...] = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
-
-
-    def apply_with_mosaic_kernel(self, A, Bs, Deltas, Cs, u):
-
-        B, L, D = u.shape
-        N = Bs.shape[-1]
-        K = self.kernel_seq_len
-
-        chunk_count = (L + K - 1) // K
-
-        def mosiac_kernel(A_ref, B_ref, Delta_ref, C_ref, u_ref,
-                          ys_ref, state_ref,
-                          A_smem, A_barrier):
-            batch_idx = lax.axis_index("batch")
-            plgpu.copy_gmem_to_smem(A_ref, A_smem, A_barrier)
-            plgpu.barrier_wait(A_barrier)
-
-            B_spec = plgpu.BlockSpec(
-                block_shape=(None, K, N),
-                index_map=lambda q: (batch_idx, q, 0),
-            )
-
-            Delta_spec = plgpu.BlockSpec(
-                block_shape=(None, K, D),
-                index_map=lambda q: (batch_idx, q, 0),
-            )
-
-            C_spec = plgpu.BlockSpec(
-                block_shape=(None, K, N),
-                index_map=lambda q: (batch_idx, q, 0),
-            )
-
-            u_spec = plgpu.BlockSpec(
-                block_shape=(None, K, D),
-                index_map=lambda q: (batch_idx, q, 0),
-            )
-
-            y_spec = plgpu.BlockSpec(
-                block_shape=(None, K, D),
-                index_map=lambda q: (batch_idx, q, 0),
-            )
-
-
-            def pipeline_body(_,
-                              B_block_ref,Delta_block_ref,
-                              C_block_ref,u_block_ref,
-                              ys_block_ref,
-                              carry):
-                # euler approx discretization
-                delta = Delta_block_ref[...]  # [K, D]
-                A_reg = A_smem[...]  # [D, N]
-                B_block = B_block_ref[...]  # [K, N]
-                u_block = u_block_ref[...]  # [K, D]
-
-                mulDeltaA = (
-                        delta[:, :, None]
-                        * A_reg[None, :, :]
-                )  # [K, D, N]
-
-                barAs = jnp.exp(mulDeltaA)
-
-                barBs = (
-                        delta[:, :, None]
-                        * B_block[:, None, :]
-                )  # [K, D, N]
-
-                Bus = barBs * u_block[:, :, None]
-                # delta_SRAM = Delta_block_ref[...]
-                # mulDeltaA = jnp.einsum("ld,dn->ldn", delta_SRAM, A_smem[...])
-                # ic(mulDeltaA.shape)
-                # barAs = jnp.exp(mulDeltaA)
-                # barBs = jnp.einsum("ld,ln->ldn", delta_SRAM, B_block_ref[...])
-                # Bus = barBs * u_block_ref[...][..., None]
-                #Bus = Bus.at[0].set(Bus[0] + barAs[0] * carry)
-
-                mask = (jnp.arange(K) == 0)[:, None, None]
-                Bus = Bus + mask * (barAs[0] * carry)[None, :, :]
-
-                def hillis_steele_scan(As, bs):
-                    # As, bs: [K, D, N]
-
-                    K = As.shape[0]
-                    offset = 1
-
-                    while offset < K:
-                        # Shift the previous-stage values right by `offset`.
-                        #
-                        # The affine identity is:
-                        #     A = 1
-                        #     b = 0
-                        #
-                        # so the first `offset` entries remain unchanged.
-                        shifted_As = jnp.concatenate(
-                            (
-                                jnp.ones_like(As[:offset]),
-                                As[:-offset],
-                            ),
-                            axis=0,
-                        )
-
-                        shifted_bs = jnp.concatenate(
-                            (
-                                jnp.zeros_like(bs[:offset]),
-                                bs[:-offset],
-                            ),
-                            axis=0,
-                        )
-
-                        # IMPORTANT: left/earlier prefix goes first.
-                        As, bs = S6.binary_operator(
-                            (shifted_As, shifted_bs),
-                            (As, bs),
-                        )
-
-                        offset *= 2
-
-                    return As, bs
-            # def pipeline_body(
-            #         _,
-            #         B_block_ref,
-            #         Delta_block_ref,
-            #         C_block_ref,
-            #         u_block_ref,
-            #         ys_block_ref,
-            #         carry,
-            # ):
-            #     ys_block_ref[...] = u_block_ref[...]
-            #
-            #     return carry
-
-                # _, xs = lax.associative_scan(S6.binary_operator, (barAs, Bus), axis=0)
-
-                # _, xs = hillis_steele_scan(barAs, Bus)
-                xs = Bus
-
-                C_block = C_block_ref[...]  # [K, N]
-
-                ys = jnp.sum(
-                    C_block[:, None, :] * xs,  # [K, D, N]
-                    axis=-1,
-                )  # [K, D]
-
-                ys_block_ref[...] = ys
-                # ys_block_ref[...] = jnp.einsum("ln,ldn->ld", C_block_ref[...], xs)
-                return xs[-1]
-
-            pipeline = plgpu.emit_pipeline(
-                body=pipeline_body,
-                grid=(chunk_count,),
-                init_carry=jnp.zeros((D,N), dtype=A.dtype),
-                in_specs=(B_spec, Delta_spec, C_spec, u_spec),
-                out_specs=(y_spec,)
-            )
-            last_state = pipeline(B_ref, Delta_ref, C_ref, u_ref, ys_ref)
-            state_ref[batch_idx, ...] = last_state
-
-        kernel = plgpu.kernel(
-            body=mosiac_kernel,
-            out_type=(
-                jax.ShapeDtypeStruct.like(u),
-                jax.ShapeDtypeStruct((B,D,N), A.dtype)
-            ),
-            grid=(B,),
-            scratch_types=(
-                plgpu.SMEM((D, N), A.dtype),
-                plgpu.Barrier()
-            ),
-            grid_names=("batch",),
-            # compiler_params=plgpu.CompilerParams(
-            #     lowering_semantics=plgpu.LoweringSemantics.Lane
-            # )
-        )
-
-        return kernel(A, Bs, Deltas, Cs, u)
-
-
-
-    def apply_with_kernel(self, A, Bs, Deltas, u):
-        needs_padding = u.shape[1] % self.kernel_seq_len != 0
-        if needs_padding:
-            pad_len = (u.shape[1] // self.kernel_seq_len + 1) * self.kernel_seq_len - u.shape[1]
-            pad_dims = (
-                (0,0),
-                (0,pad_len),
-                (0,0),
-            )
-            Bs = jnp.pad(Bs, pad_dims)
-            Deltas = jnp.pad(Deltas, pad_dims)
-            u = jnp.pad(u, pad_dims)
-        block_count = u.shape[1] // self.kernel_seq_len
-        ic(block_count)
-        B_split = jnp.stack(jnp.split(Bs, block_count, axis=1)).transpose((1,0,2,3))
-        ic(B_split.shape)
-        Delta_split = jnp.stack(jnp.split(Deltas, block_count, axis=1)).transpose((1,0,2,3))
-        ic(Delta_split.shape)
-        u_split = jnp.stack(jnp.split(u, block_count, axis=1)).transpose((1,0,2,3))
-        ic(u_split.shape)
-        if self.euler_barB_approx:
-            block_As, block_zero_init_xs = nnx.vmap(
-                lambda B, Delta, u: nnx.vmap(
-                    lambda B_block, Delta_block, u_block: pl.pallas_call(
-                        kernel=S6.euler_approx_kernel,
-                        out_shape=(
-                            jax.ShapeDtypeStruct((self.kernel_seq_len, u_block.shape[1], B_block.shape[1]), jnp.float32),
-                            jax.ShapeDtypeStruct((self.kernel_seq_len, u_block.shape[1], B_block.shape[1]), jnp.float32)
-                        ),
-                        interpret=True
-                    )(A.astype(jnp.float32), B_block, Delta_block, u_block)
-                )(B, Delta, u)
-            )(B_split, Delta_split, u_split)
-        else:
-            block_As, block_zero_init_xs = nnx.vmap(
-                lambda B, Delta, u: nnx.vmap(
-                    lambda B_block, Delta_block, u_block: pl.pallas_call(
-                        kernel=S6.zoh_kernel,
-                        out_shape=(
-                            jax.ShapeDtypeStruct((self.kernel_seq_len, u_block.shape[1], B_block.shape[1]),
-                                                 jnp.float32),
-                            jax.ShapeDtypeStruct((self.kernel_seq_len, u_block.shape[1], B_block.shape[1]), jnp.float32)
-                        ),
-                        interpret=True
-                    )(A.astype(jnp.float32), B_block, Delta_block, u_block)
-                )(B, Delta, u)
-            )(B_split, Delta_split, u_split)
-        ic(block_As.shape)
-        _, exiting_states = lax.associative_scan(S6.binary_operator, (block_As[:,:,-1], block_zero_init_xs[:,:,-1]), axis=1)
-        ic(exiting_states.shape)
-        entering_states = jnp.pad(exiting_states, ((0,0),(1,0),(0,0),(0,0)))[:,:-1]
-        ic(entering_states.shape)
-        macro_scanned_xs = block_As * entering_states[:,:, None] + block_zero_init_xs
-        xs = jnp.reshape(macro_scanned_xs, u.shape + (Bs.shape[2],))
-        if needs_padding: xs = xs[:,:-pad_len]
-        return xs
-
-
     # @nnx.jit
-    def __call__(self, x):
+    def __call__(self, u):
         A = -jnp.exp(self.A.real) + (self.A.imag * 1j if self.complex_ssm else 0) if self.log_A else self.A
-        Bs = self.s_B(x)
-        Cs = self.s_C(x)
-        Deltas = self.tau_Delta(self.biased_s_Delta(x))
+        Bs = self.s_B(u)
+        Cs = self.s_C(u)
+        Deltas = self.tau_Delta(self.biased_s_Delta(u))
 
         ic(A.shape)
 
-        ic(x.shape)
+        ic(u.shape)
         ic(Bs.shape)
         ic(Deltas.shape)
         xs=None
-        if not self.use_kernel:
-            A_bars, B_bars = self.discretize(A, Bs, Deltas)
-            Bx = B_bars * x[..., jnp.newaxis]
-            _, xs = lax.associative_scan(S6.binary_operator, (A_bars, Bx), axis=1)
-            self.state_caches.value = xs[:, -1:, ...]
-            ys = jnp.einsum("bln,bldn->bld", Cs, xs)
-        else:
-            # xs = self.apply_with_kernel(A, Bs, Deltas, x)
-            xs = self.apply_with_kernel(A, Bs, Deltas, x)
-            self.state_caches.value = xs[:, -1:, ...]
-            ys = jnp.einsum("bln,bldn->bld", Cs, xs)
-        ic(xs.shape)
-
+        A_bars, B_bars = self.discretize(A, Bs, Deltas)
+        Bu = B_bars * u[..., jnp.newaxis]
+        _, xs = lax.associative_scan(S6.binary_operator, (A_bars, Bu), axis=1)
+        if self.has_cache: self.state_cache.value = xs[:, -1]
+        ys = jnp.einsum("bln,bldn->bld", Cs, xs)
         return ys if not self.complex_ssm else ys.real
 
-    def step(self, token, prev_state=None):
+    def step(self, token):
+        if not self.has_cache:
+            self.initialize_state(token.shape)
+
         A = -jnp.exp(self.A.real) + (self.A.imag * 1j if self.complex_ssm else 0) if self.log_A else self.A
         B = self.s_B(token)
         C = self.s_C(token)
         Deltas = self.tau_Delta(self.biased_s_Delta(token))
         A_bar, B_bar = self.discretize(A, B, Deltas)
-        if self.state_caches[...] is None and prev_state is None:
-            prev_state = jnp.zeros_like(A_bar)
-        elif self.state_caches[...] is not None and prev_state is None:
-            prev_state = self.state_caches
-        x = A_bar * prev_state + B_bar * token[..., jnp.newaxis]
-        if self.cache_states:
-            self.state_caches.value = x
+
+        Bu = B_bar * token[..., jnp.newaxis]
+        x = A_bar * self.state_cache[...] + Bu
+
+        self.state_cache.value = x
         y = jnp.einsum("bln,bldn->bld", C, x)
         return y if not self.complex_ssm else y.real
 
@@ -405,19 +130,30 @@ class Mamba(nnx.Module):
         self.sigma = nnx.silu
         self.s6 = S6(rngs, D, N=N, R=R,
                      use_euler_barB_approx=use_euler_barB_approx, complex_ssm=complex_ssm,
-                     use_log_A_stability_trick=use_log_A_stability_trick, use_bf16=bf16, cache_states=cache_states)
+                     use_log_A_stability_trick=use_log_A_stability_trick, use_bf16=bf16)
         self.proj_down = nnx.Linear(in_features=D, out_features=out_features, rngs=rngs, dtype=dtype)
-        self.cache = nnx.Variable
-        self.cache_states = cache_states
+        self.has_cache = False
+        self.D = D
+
+    def initialize_state(self, input_shape, state_init_value=None):
+        kernel_size = self.conv.kernel.shape[0]
+        cache_shape = (input_shape[0], kernel_size-1, self.D)
+        self.cache = nnx.Variable(jnp.zeros(cache_shape))
+        if state_init_value:
+            cache_concat = jnp.concatenate([self.cache[...], state_init_value], axis=1)
+            self.cache.value = cache_concat[:, 1:, ...]
+        self.has_cache = True
 
     # @nnx.jit
     def __call__(self, x):
         projed = self.main_proj_up(x)
         skip = self.sigma(self.skip_proj_up(x))
 
-        if self.cache_states:
-            kernel_size = self.conv.kernel.shape[0]
-            self.cache.value = projed[:,-(kernel_size-1):, ...]
+        if not self.has_cache:
+            self.initialize_state(x.shape)
+
+        kernel_size = self.conv.kernel.shape[0]
+        self.cache.value = projed[:,-(kernel_size-1):, ...]
 
         conved = self.sigma(self.conv(projed))
         ssm_out = self.s6(conved)
@@ -429,20 +165,15 @@ class Mamba(nnx.Module):
         projed = self.main_proj_up(token)
         skip = self.sigma(self.skip_proj_up(token))
 
-        if self.cache[...] is None:
-            kernel_size = self.conv.kernel.shape[0]
-            cache_concat = jnp.pad(projed,
-                                   pad_width=(
-                                        (0,0),
-                                        (kernel_size-1, 0),
-                                        (0,0)
-                                    )
-                                   )
-        else:
-            cache_concat = jnp.concatenate([self.cache, projed], axis=1)
-        self.cache = cache_concat[:,1:,...]
+        if not self.has_cache:
+            self.initialize_state(token.shape)
 
-        conved = self.sigma(self.conv(cache_concat)[0,-1:,...])
+
+        cache_concat = jnp.concatenate([self.cache[...], projed], axis=1)
+        self.cache.value = cache_concat[:,1:,...]
+
+        conved = self.sigma(self.conv(cache_concat)[:,-1:,...])
+
         ssm_out = self.s6.step(conved)
         muled = ssm_out * skip
         logits = self.proj_down(muled)
