@@ -12,6 +12,17 @@ from icecream import ic
 from .mamba1_kernel import apply_pallas_mamba_kernel
 
 
+@jax.remat
+def _apply_pallas_kernel_pure(A, Deltas, Bs, Cs, u, N, use_euler_barB_approx, K, initial_x=None):
+    return apply_pallas_mamba_kernel(
+        A, Deltas, Bs, Cs, u,
+        N=N,
+        use_euler_barB_approx=use_euler_barB_approx,
+        K=K,
+        initial_x=initial_x,
+    )
+
+
 class S6(nnx.Module):
     def __init__(self, rngs:nnx.Rngs, D, N:int=16, R:int | str="auto",
                  complex_ssm:bool=False, use_euler_barB_approx:bool=True, use_log_A_stability_trick:bool=True,
@@ -90,21 +101,17 @@ class S6(nnx.Module):
         At, ht = Aht
         return At * At_prev, At * ht_prev + ht
 
-    @nnx.remat
-    def _apply_kernel_pure(self, A, Deltas, Bs, Cs, u, initial_x=None):
-        return apply_pallas_mamba_kernel(
+    def apply_kernel(self, A, Deltas, Bs, Cs, u, initial_x=None):
+        if self.complex_ssm or not any(device.platform == "gpu" for device in jax.devices()):
+            return self.apply_ssm(A, Bs, Deltas, Cs, u)
+
+        ys, final_x = _apply_pallas_kernel_pure(
             A, Deltas, Bs, Cs, u,
             N=self.N,
             use_euler_barB_approx=self.euler_barB_approx,
             K=self.K,
             initial_x=initial_x,
         )
-
-    def apply_kernel(self, A, Deltas, Bs, Cs, u, initial_x=None):
-        if self.complex_ssm or not any(device.platform == "gpu" for device in jax.devices()):
-            return self.apply_ssm(A, Bs, Deltas, Cs, u)
-
-        ys, final_x = self._apply_kernel_pure(A, Deltas, Bs, Cs, u, initial_x=initial_x)
         if self.has_cache:
             self.state_cache.value = jax.lax.stop_gradient(final_x)
         return ys
