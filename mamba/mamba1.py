@@ -9,7 +9,7 @@ from jax import ShapeDtypeStruct
 from icecream import ic
 
 
-from mamba1_kernel import apply_pallas_mamba_kernel
+from .mamba1_kernel import apply_pallas_mamba_kernel
 
 
 class S6(nnx.Module):
@@ -91,27 +91,36 @@ class S6(nnx.Module):
         return At * At_prev, At * ht_prev + ht
 
     @nnx.remat
-    def apply_kernel(self, A, Deltas, Bs, Cs, u):
-        if self.complex_ssm or not any(device.platform == "gpu" for device in jax.devices()):
-            return self.apply_ssm(A, Bs, Deltas, Cs, u)
-
-        ys, final_x = apply_pallas_mamba_kernel(
+    def _apply_kernel_pure(self, A, Deltas, Bs, Cs, u, initial_x=None):
+        return apply_pallas_mamba_kernel(
             A, Deltas, Bs, Cs, u,
             N=self.N,
             use_euler_barB_approx=self.euler_barB_approx,
             K=self.K,
+            initial_x=initial_x,
         )
+
+    def apply_kernel(self, A, Deltas, Bs, Cs, u, initial_x=None):
+        if self.complex_ssm or not any(device.platform == "gpu" for device in jax.devices()):
+            return self.apply_ssm(A, Bs, Deltas, Cs, u)
+
+        ys, final_x = self._apply_kernel_pure(A, Deltas, Bs, Cs, u, initial_x=initial_x)
         if self.has_cache:
-            self.state_cache.value = final_x
+            self.state_cache.value = jax.lax.stop_gradient(final_x)
         return ys
 
     @nnx.remat
-    def apply_ssm(self, A, Bs, Deltas, Cs, u):
+    def _apply_ssm_pure(self, A, Bs, Deltas, Cs, u):
         A_bars, B_bars = self.discretize(A, Bs, Deltas)
         Bu = B_bars * u[..., jnp.newaxis]
         _, xs = lax.associative_scan(S6.binary_operator, (A_bars, Bu), axis=1)
-        if self.has_cache: self.state_cache.value = xs[:, -1]
         ys = jnp.einsum("bln,bldn->bld", Cs, xs)
+        return ys, xs[:, -1]
+
+    def apply_ssm(self, A, Bs, Deltas, Cs, u):
+        ys, final_x = self._apply_ssm_pure(A, Bs, Deltas, Cs, u)
+        if self.has_cache:
+            self.state_cache.value = jax.lax.stop_gradient(final_x)
         return ys
 
     def __call__(self, u):
