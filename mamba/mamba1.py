@@ -15,9 +15,9 @@ from .mamba1_kernel import apply_pallas_mamba_kernel
 class S6(nnx.Module):
     def __init__(self, rngs:nnx.Rngs, D, N:int=16, R:int | str="auto",
                  complex_ssm:bool=False, use_euler_barB_approx:bool=True, use_log_A_stability_trick:bool=True,
-                 use_bf16=False, use_kernel: bool=True, kernel_len=512, kernel_seq_len=None):
+                 use_bf16=False, use_kernel: bool=True, kernel_len: int=512):
 
-        self.K = kernel_len if kernel_seq_len is None else kernel_seq_len
+        self.K = kernel_len
         self.use_kernel = use_kernel
 
         self.N = N
@@ -150,27 +150,35 @@ class S6(nnx.Module):
 
 class Mamba(nnx.Module):
     def __init__(self, rngs:nnx.Rngs,
-                 in_features:int, out_features:int,
-                 D:int, N:int=16, R:int | str="auto",
+                 D:int, expand:int, N:int=16, R:int | str="auto",
                  causal_conv_kernel_size:int=4,
+                 use_norm=True, norm_type='layernorm',
+                    kernel_len=512,
                     use_euler_barB_approx:bool=True, complex_ssm:bool=False,
-                    use_log_A_stability_trick:bool=True, bf16=False, cache_states=True):
+                    use_log_A_stability_trick:bool=True, bf16=False):
         dtype = jnp.bfloat16 if bf16 else jnp.float32
-        self.main_proj_up = nnx.Linear(in_features=in_features, out_features=D, rngs=rngs, dtype=dtype)
-        self.skip_proj_up = nnx.Linear(in_features=in_features, out_features=D, rngs=rngs, dtype=dtype)
-        self.conv = nnx.Conv(in_features=D, out_features=D, kernel_size=causal_conv_kernel_size, feature_group_count=D,
+        self.main_proj_up = nnx.Linear(in_features=D, out_features=D*expand, rngs=rngs, dtype=dtype)
+        self.skip_proj_up = nnx.Linear(in_features=D, out_features=D*expand, rngs=rngs, dtype=dtype)
+        self.conv = nnx.Conv(in_features=D*expand, out_features=D*expand, kernel_size=causal_conv_kernel_size, feature_group_count=D*expand,
                              padding="CAUSAL", use_bias=False, rngs=rngs, dtype=dtype)
         self.sigma = nnx.silu
-        self.s6 = S6(rngs, D, N=N, R=R,
+        self.s6 = S6(rngs, D*expand, N=N, R=R, kernel_len=kernel_len,
                      use_euler_barB_approx=use_euler_barB_approx, complex_ssm=complex_ssm,
                      use_log_A_stability_trick=use_log_A_stability_trick, use_bf16=bf16)
-        self.proj_down = nnx.Linear(in_features=D, out_features=out_features, rngs=rngs, dtype=dtype)
+        self.proj_down = nnx.Linear(in_features=D*expand, out_features=D, rngs=rngs, dtype=dtype)
         self.has_cache = False
         self.D = D
+        self.expand = expand
+        self.has_norm = use_norm
+        if use_norm:
+            if norm_type == 'layernorm':
+                self.norm = nnx.LayerNorm(D, rngs=rngs)
+            elif norm_type == 'rmsnorm':
+                self.norm = nnx.RMSNorm(D, rngs=rngs)
 
     def initialize_state(self, input_shape, state_init_value=None):
         kernel_size = self.conv.kernel.shape[0]
-        cache_shape = (input_shape[0], kernel_size-1, self.D)
+        cache_shape = (input_shape[0], kernel_size-1, self.D*self.expand)
         self.cache = nnx.Variable(jnp.zeros(cache_shape))
         if state_init_value:
             cache_concat = jnp.concatenate([self.cache[...], state_init_value], axis=1)
@@ -179,28 +187,39 @@ class Mamba(nnx.Module):
 
     # @nnx.jit
     def __call__(self, x):
+        res = x
+
+        if self.has_norm:
+            x = self.norm(x)
+
         projed = self.main_proj_up(x)
         skip = self.sigma(self.skip_proj_up(x))
 
-        if not self.has_cache:
-            self.initialize_state(x.shape)
-
         kernel_size = self.conv.kernel.shape[0]
-        self.cache.value = projed[:,-(kernel_size-1):, ...]
+        if self.has_cache:
+            self.cache.value = projed[:,-(kernel_size-1):, ...]
 
         conved = self.sigma(self.conv(projed))
         ssm_out = self.s6(conved)
         muled = ssm_out * skip
         logits = self.proj_down(muled)
+
+        logits += res
+
         return logits
 
     def step(self, token):
+
+        res = token
+
+        if self.has_norm:
+            token = self.norm(token)
+
         projed = self.main_proj_up(token)
         skip = self.sigma(self.skip_proj_up(token))
 
         if not self.has_cache:
             self.initialize_state(token.shape)
-
 
         cache_concat = jnp.concatenate([self.cache[...], projed], axis=1)
         self.cache.value = cache_concat[:,1:,...]
@@ -210,5 +229,7 @@ class Mamba(nnx.Module):
         ssm_out = self.s6.step(conved)
         muled = ssm_out * skip
         logits = self.proj_down(muled)
+
+        logits+=res
 
         return logits

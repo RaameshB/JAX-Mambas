@@ -7,7 +7,7 @@ Likely order of implementation:
 
 ## Implementation Progress:
 - [ ] [Mamba](https://arxiv.org/abs/2312.00752):
-  - [x] Mathematical Form
+  - [x] Mathematical Form - (Achieves equivalence to original implementation with 1e-4 tolerance)
   - [x] Stability Tricks
   - [x] Pallas Kernel - (Achieves 4.70x speedup forward and 4.43x speedup backward on A100 when compared to JIT)
   - [ ] LayerNorm/RMSNorm and also need to add variable length sequence padding support
@@ -29,7 +29,7 @@ A custom Pallas Mosaic GPU kernel implementing Mamba-1's S6 selective scan. It s
 - **Scan Strategy**: Employs a 2D Blelloch parallel scan in SMEM across sequence chunks ($K$) and state dimensions ($N=16$), compared to intra-warp register shuffle instructions (`__shfl_sync`) in the original Mamba CUDA kernel.
 - **Sequence Pipeline**: Streams sequence partitions via `plgpu.emit_pipeline` state carries.
 - **Backward Pass**: Leverages native JAX automatic differentiation (`jax.grad` with `@nnx.remat`) instead of the custom hand-written backward CUDA kernel (`selective_scan_bwd_kernel.cuh`) from the original Mamba repository.
-  - Note: there is no current plan to implement the backwards pass. Pallas gets traced through by JAX's autodiff, so the forward kernel's speedups largely carry over to the backwards pass already.
+  - Note: there is no current plan to implement a backwards pass kernel. Pallas gets traced through by JAX's autodiff, so the forward kernel's speedups largely carry over to the backwards pass already.
 
 ### Performance Benchmarks
 Evaluated on canonical Mamba-130M hyperparameters: Batch Size $B=4$, Sequence Length $L=16,384$, Inner Dimension $D=1536$, State Size $N=16$.
