@@ -82,7 +82,7 @@ def main():
     test_inp = rngs.uniform((B, L, D), dtype=dtype)
 
     reference_s6 = S6(rngs, D=D, N=N, use_kernel=False, use_bf16=args.use_bf16)
-    kernel_s6 = S6(rngs, D=D, N=N, use_kernel=True, kernel_seq_len=K, use_bf16=args.use_bf16)
+    kernel_s6 = S6(rngs, D=D, N=N, use_kernel=True, kernel_len=K, use_bf16=args.use_bf16)
 
     # Wrap BOTH modules with nnx.jit for a 100% fair comparison
     @nnx.jit

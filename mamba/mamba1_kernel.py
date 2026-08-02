@@ -1,0 +1,180 @@
+import jax
+import jax.numpy as jnp
+from jax.experimental import pallas as pl
+from jax.experimental.pallas import mosaic_gpu as plgpu
+from jax import ShapeDtypeStruct
+
+
+def _mamba_kernel_chunk_size(seq_len):
+    if seq_len <= 128:
+        return 128
+    if seq_len <= 256:
+        return 256
+    return 512
+
+
+def blelloch_scan(A_seq, h_seq):
+    """Work-efficient 2D (Blelloch) inclusive scan over time axis (axis 0).
+    
+    A_seq: (block_len, N)
+    h_seq: (block_len, N)
+    """
+    def combine(earlier, later):
+        A_e, h_e = earlier
+        A_l, h_l = later
+        return A_l * A_e, A_l * h_e + h_l
+
+    def deinterleave(v):
+        T, N = v.shape
+        pair = v.reshape(T // 2, 2, N)
+        return pair[:, 0, :], pair[:, 1, :]
+
+    def interleave(a, b):
+        T_half, N = a.shape
+        stacked = jnp.stack([a, b], axis=1)
+        return stacked.reshape(T_half * 2, N)
+
+    def _scan(A_e, h_e):
+        if A_e.shape[0] == 1:
+            return A_e, h_e
+        A0, A1 = deinterleave(A_e)
+        h0, h1 = deinterleave(h_e)
+        odd_A, odd_h = _scan(*combine((A0, h0), (A1, h1)))
+        even_rest_A, even_rest_h = combine((odd_A[:-1], odd_h[:-1]), (A0[1:], h0[1:]))
+        even_A = A0.at[1:].set(even_rest_A)
+        even_h = h0.at[1:].set(even_rest_h)
+        return interleave(even_A, odd_A), interleave(even_h, odd_h)
+
+    return _scan(A_seq, h_seq)
+
+
+def apply_pallas_mamba_kernel(
+    A, Deltas, Bs, Cs, u,
+    N: int = 16,
+    use_euler_barB_approx: bool = True,
+    K: int = 512,
+    initial_x = None,
+    scan_dtype = jnp.float32,
+    max_concurrent_steps: int = 1,
+):
+    """Executes the high-performance Pallas Mosaic GPU kernel for Mamba S6.
+
+    Uses FP32 precision internally for scan accumulation matching the Mamba paper.
+    Outputs match the input activation dtype (e.g. bfloat16).
+    
+    Args:
+        A: (dim, N) SSM transition parameter matrix
+        Deltas: (batch, seq_len, dim) continuous step size
+        Bs: (batch, seq_len, N) input projection
+        Cs: (batch, seq_len, N) output projection
+        u: (batch, seq_len, dim) input sequence activations
+        N: State dimension size (default: 16)
+        use_euler_barB_approx: Use Euler barB approximation vs exact ZOH (default: True)
+        K: Chunk size for block tiling (default: 512)
+        initial_x: Optional (batch, dim, N) initial state vector for streaming chunk continuation
+        scan_dtype: Precision for internal recurrence math (default: jnp.float32)
+        max_concurrent_steps: Pipeline stage concurrency (default: 1)
+
+    Returns:
+        ys: (batch, seq_len, dim) output tensor matching input dtype
+        final_x: (batch, dim, N) final SSM state vector in scan_dtype
+    """
+    batch, seq_len, dim = u.shape
+
+    # Static shape assertions
+    assert A.shape == (dim, N), f"A shape must be ({dim}, {N}), got {A.shape}"
+    assert Deltas.shape == (batch, seq_len, dim), f"Deltas shape must be ({batch}, {seq_len}, {dim}), got {Deltas.shape}"
+    assert Bs.shape == (batch, seq_len, N), f"Bs shape must be ({batch}, {seq_len}, {N}), got {Bs.shape}"
+    assert Cs.shape == (batch, seq_len, N), f"Cs shape must be ({batch}, {seq_len}, {N}), got {Cs.shape}"
+    assert u.shape == (batch, seq_len, dim), f"u shape must be ({batch}, {seq_len}, {dim}), got {u.shape}"
+    if initial_x is not None:
+        assert initial_x.shape == (batch, dim, N), f"initial_x shape must be ({batch}, {dim}, {N}), got {initial_x.shape}"
+
+    block_len = _mamba_kernel_chunk_size(seq_len) if K is None else K
+    if block_len & (block_len - 1):
+        raise ValueError("K (kernel_len) must be a power of two for Blelloch scan.")
+
+    padded_len = ((seq_len + block_len - 1) // block_len) * block_len
+    n_chunks = padded_len // block_len
+    kernel_n_state = N
+
+    y_dtype = u.dtype  # Output activation dtype matches input u.dtype (e.g. bfloat16)
+
+    if padded_len != seq_len:
+        time_padding = padded_len - seq_len
+        u = jnp.pad(u, ((0, 0), (0, time_padding), (0, 0)))
+        Deltas = jnp.pad(Deltas, ((0, 0), (0, time_padding), (0, 0)))
+        Bs = jnp.pad(Bs, ((0, 0), (0, time_padding), (0, 0)))
+        Cs = jnp.pad(Cs, ((0, 0), (0, time_padding), (0, 0)))
+
+    Deltas_bdl = jnp.transpose(Deltas, (0, 2, 1))
+    u_bdl = jnp.transpose(u, (0, 2, 1))
+    has_init_x = initial_x is not None
+    init_x_val = initial_x if has_init_x else jnp.zeros((batch, dim, N), dtype=scan_dtype)
+
+    def ssm_kernel(A_ref, Delta_ref, B_ref, C_ref, u_ref, init_x_ref, ys_ref, final_x_ref):
+        b = pl.program_id(0)
+        d = pl.program_id(1)
+
+        # FP32 accumulation precision for exponentiation and recurrence stability
+        A_states = jnp.array([A_ref[d, n].astype(scan_dtype) for n in range(kernel_n_state)])
+        init_x = init_x_ref[b, d, :].astype(scan_dtype)
+
+        def chunk_body(_, Delta_smem, B_smem, C_smem, u_smem, y_smem, x):
+            deltas = Delta_smem[:].astype(scan_dtype)
+            tokens = u_smem[:].astype(scan_dtype)
+            B_mat = B_smem[:, :].astype(scan_dtype)
+            C_mat = C_smem[:, :].astype(scan_dtype)
+
+            delta_A = deltas[:, None] * A_states[None, :]
+            A_bars = jnp.exp(delta_A)
+
+            if use_euler_barB_approx:
+                B_bars = deltas[:, None] * B_mat
+            else:
+                B_bars = jnp.expm1(delta_A) * (1.0 / A_states[None, :]) * B_mat
+
+            Bu = B_bars * tokens[:, None]
+
+            A_cum, h_cum = blelloch_scan(A_bars, Bu)
+            xs = A_cum * x[None, :] + h_cum
+
+            y_smem[:] = jnp.sum(C_mat * xs, axis=-1).astype(y_dtype)
+            return xs[-1]
+
+        pipeline = plgpu.emit_pipeline(
+            chunk_body,
+            grid=(n_chunks,),
+            in_specs=[
+                plgpu.BlockSpec((block_len,), lambda chunk: (chunk,)),
+                plgpu.BlockSpec((block_len, kernel_n_state), lambda chunk: (chunk, 0)),
+                plgpu.BlockSpec((block_len, kernel_n_state), lambda chunk: (chunk, 0)),
+                plgpu.BlockSpec((block_len,), lambda chunk: (chunk,)),
+            ],
+            out_specs=[
+                plgpu.BlockSpec((block_len,), lambda chunk: (chunk,)),
+            ],
+            max_concurrent_steps=max_concurrent_steps,
+            init_carry=init_x,
+        )
+        final_x = pipeline(
+            Delta_ref.at[b, d],
+            B_ref.at[b],
+            C_ref.at[b],
+            u_ref.at[b, d],
+            ys_ref.at[b, d],
+        )
+        final_x_ref[b, d, :] = final_x
+
+    ys_bdl, final_x = plgpu.kernel(
+        ssm_kernel,
+        out_type=(
+            ShapeDtypeStruct((batch, dim, padded_len), dtype=y_dtype),
+            ShapeDtypeStruct((batch, dim, N), dtype=scan_dtype),
+        ),
+        grid=(batch, dim),
+        grid_names=("batch", "dim"),
+    )(A, Deltas_bdl, Bs, Cs, u_bdl, init_x_val)
+
+    ys = jnp.transpose(ys_bdl, (0, 2, 1))
+    return ys[:, :seq_len, :], final_x

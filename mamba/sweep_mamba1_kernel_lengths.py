@@ -96,7 +96,7 @@ def main():
 
     for K in args.kernel_lengths:
         try:
-            kernel_s6 = S6(rngs, D=D, N=N, use_kernel=True, kernel_seq_len=K, use_bf16=args.use_bf16)
+            kernel_s6 = S6(rngs, D=D, N=N, use_kernel=True, kernel_len=K, use_bf16=args.use_bf16)
             
             @nnx.jit
             def kernel_fwd(x):
