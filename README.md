@@ -9,7 +9,7 @@ Likely order of implementation:
 - [ ] [Mamba](https://arxiv.org/abs/2312.00752):
   - [x] Mathematical Form
   - [x] Stability Tricks
-  - [ ] Pallas Kernel
+  - [x] Pallas Kernel - (Achieves 4.70x speedup forward and 4.43x speedup backward on A100 when compared to JIT)
   - [ ] LayerNorm/RMSNorm and also need to add variable length sequence padding support
 - [ ] [Mamba-2](https://arxiv.org/abs/2405.21060):
   - [ ] Mathematical Form

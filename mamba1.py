@@ -3,14 +3,22 @@ from flax import nnx
 import jax.numpy as jnp
 import jax.random as jrand
 from jax import lax
+from jax.experimental import pallas as pl
+from jax.experimental.pallas import mosaic_gpu as plgpu
+from jax import ShapeDtypeStruct
 from icecream import ic
 
 
+from mamba1_kernel import apply_pallas_mamba_kernel
+
 
 class S6(nnx.Module):
-    def __init__(self, rngs:nnx.Rngs, D, N:int=64, R:int=1,
+    def __init__(self, rngs:nnx.Rngs, D, N:int=16, R:int | str="auto",
                  complex_ssm:bool=False, use_euler_barB_approx:bool=True, use_log_A_stability_trick:bool=True,
-                 use_bf16=False):
+                 use_bf16=False, use_kernel: bool=True, kernel_len=512, kernel_seq_len=None):
+
+        self.K = kernel_len if kernel_seq_len is None else kernel_seq_len
+        self.use_kernel = use_kernel
 
         self.N = N
         self.euler_barB_approx = use_euler_barB_approx
@@ -40,6 +48,9 @@ class S6(nnx.Module):
             uniform = jrand.uniform(rng_key, shape, dtype, minval=1e-3, maxval=1e-1).astype(real_dtype)
             return tau_Delta_inv(uniform)
 
+        if R == "auto":
+            R = max(1, (D + 15) // 16)
+
         # Each SSM has a scalar Delta value, despite using vector-valued states (this differs from S5 in this way)
         if R==1:
             self.Linear_1 = nnx.Linear(in_features=D, out_features=1, use_bias=False, rngs=rngs, dtype=real_dtype)
@@ -49,6 +60,7 @@ class S6(nnx.Module):
         elif R>1:
             self.Linear_R = nnx.Linear(in_features=D, out_features=R, use_bias=False, rngs=rngs, dtype=real_dtype)
             self.Linear_Delta = nnx.Linear(in_features=R, out_features=D, use_bias=False, rngs=rngs, bias_init=s_Delta_bias_initializer, dtype=real_dtype)
+            self.biased_s_Delta = lambda x: self.Linear_Delta(self.Linear_R(x))
         else:
             raise ValueError("R must be 1 or greater.")
 
@@ -78,24 +90,36 @@ class S6(nnx.Module):
         At, ht = Aht
         return At * At_prev, At * ht_prev + ht
 
-    # @nnx.jit
-    def __call__(self, u):
-        A = -jnp.exp(self.A.real) + (self.A.imag * 1j if self.complex_ssm else 0) if self.log_A else self.A
-        Bs = self.s_B(u)
-        Cs = self.s_C(u)
-        Deltas = self.tau_Delta(self.biased_s_Delta(u))
+    @nnx.remat
+    def apply_kernel(self, A, Deltas, Bs, Cs, u):
+        if self.complex_ssm or not any(device.platform == "gpu" for device in jax.devices()):
+            return self.apply_ssm(A, Bs, Deltas, Cs, u)
 
-        ic(A.shape)
+        ys, final_x = apply_pallas_mamba_kernel(
+            A, Deltas, Bs, Cs, u,
+            N=self.N,
+            use_euler_barB_approx=self.euler_barB_approx,
+            K=self.K,
+        )
+        if self.has_cache:
+            self.state_cache.value = final_x
+        return ys
 
-        ic(u.shape)
-        ic(Bs.shape)
-        ic(Deltas.shape)
-        xs=None
+    @nnx.remat
+    def apply_ssm(self, A, Bs, Deltas, Cs, u):
         A_bars, B_bars = self.discretize(A, Bs, Deltas)
         Bu = B_bars * u[..., jnp.newaxis]
         _, xs = lax.associative_scan(S6.binary_operator, (A_bars, Bu), axis=1)
         if self.has_cache: self.state_cache.value = xs[:, -1]
         ys = jnp.einsum("bln,bldn->bld", Cs, xs)
+        return ys
+
+    def __call__(self, u):
+        A = -jnp.exp(self.A.real) + (self.A.imag * 1j if self.complex_ssm else 0) if self.log_A else self.A
+        Bs = self.s_B(u)
+        Cs = self.s_C(u)
+        Deltas = self.tau_Delta(self.biased_s_Delta(u))
+        ys = self.apply_kernel(A, Deltas, Bs, Cs, u) if self.use_kernel else self.apply_ssm(A, Bs, Deltas, Cs, u) # recomputation trick
         return ys if not self.complex_ssm else ys.real
 
     def step(self, token):
@@ -118,7 +142,7 @@ class S6(nnx.Module):
 class Mamba(nnx.Module):
     def __init__(self, rngs:nnx.Rngs,
                  in_features:int, out_features:int,
-                 D:int, N:int=64, R:int=1,
+                 D:int, N:int=16, R:int | str="auto",
                  causal_conv_kernel_size:int=4,
                     use_euler_barB_approx:bool=True, complex_ssm:bool=False,
                     use_log_A_stability_trick:bool=True, bf16=False, cache_states=True):
@@ -179,5 +203,3 @@ class Mamba(nnx.Module):
         logits = self.proj_down(muled)
 
         return logits
-
-
