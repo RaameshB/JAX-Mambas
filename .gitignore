@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.idea/
+.venv/
+test_induction_heads_training.py
+mamba2.py
+mamba3.py
+naive_mamba_playground.ipynb
+test_mamba_1.ipynb
+experiments/mamba_inductionheads.py
