@@ -9,10 +9,11 @@ from jax import ShapeDtypeStruct
 from icecream import ic
 
 
+from functools import partial
 from .mamba1_kernel import apply_pallas_mamba_kernel
 
 
-@jax.remat
+@partial(jax.remat, static_argnames=("N", "use_euler_barB_approx", "K"))
 def _apply_pallas_kernel_pure(A, Deltas, Bs, Cs, u, N, use_euler_barB_approx, K, initial_x=None):
     return apply_pallas_mamba_kernel(
         A, Deltas, Bs, Cs, u,
