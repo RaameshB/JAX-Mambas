@@ -190,6 +190,8 @@ class Mamba(nnx.Module):
         if state_init_value:
             cache_concat = jnp.concatenate([self.cache[...], state_init_value], axis=1)
             self.cache.value = cache_concat[:, 1:, ...]
+        s6_input_shape = (input_shape[0], input_shape[1], self.D * self.expand)
+        self.s6.initialize_state(s6_input_shape)
         self.has_cache = True
 
     # @nnx.jit
