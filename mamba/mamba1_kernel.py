@@ -39,10 +39,11 @@ def blelloch_scan(A_seq, h_seq):
 
     def join_first_and_rest(first, rest):
         M = rest.shape[0]
+        N_state = first.shape[1]
         idx = jnp.arange(1 + M)[:, None]
         is_first = (idx == 0)
         rest_padded = rest[jnp.maximum(0, idx[:, 0] - 1), :]
-        first_padded = jnp.broadcast_to(first, (1 + M, N))
+        first_padded = jnp.broadcast_to(first, (1 + M, N_state))
         return jnp.where(is_first, first_padded, rest_padded)
 
     def _scan(A_e, h_e):
