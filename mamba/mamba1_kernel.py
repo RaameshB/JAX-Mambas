@@ -50,9 +50,24 @@ def blelloch_scan(A_seq, h_seq):
         odd_A, odd_h = _scan(*combine((A0, h0), (A1, h1)))
         even_rest_A, even_rest_h = combine((odd_A[:-1], odd_h[:-1]), (A0[1:], h0[1:]))
 
-        even_A = A0.at[1:].set(even_rest_A)
-        even_h = h0.at[1:].set(even_rest_h)
-        return interleave(even_A, odd_A), interleave(even_h, odd_h)
+        first_two_A = interleave(A0[:1], odd_A[:1])
+        first_two_h = interleave(h0[:1], odd_h[:1])
+
+        rest_A = interleave(even_rest_A, odd_A[1:])
+        rest_h = interleave(even_rest_h, odd_h[1:])
+
+        t_idx = jnp.arange(T)[:, None]
+        first_mask = (t_idx < 2)
+
+        first_padded_A = jnp.pad(first_two_A, ((0, T - 2), (0, 0)))
+        first_padded_h = jnp.pad(first_two_h, ((0, T - 2), (0, 0)))
+
+        rest_padded_A = jnp.pad(rest_A, ((2, 0), (0, 0)))
+        rest_padded_h = jnp.pad(rest_h, ((2, 0), (0, 0)))
+
+        out_A = jnp.where(first_mask, first_padded_A, rest_padded_A)
+        out_h = jnp.where(first_mask, first_padded_h, rest_padded_h)
+        return out_A, out_h
 
     return _scan(A_seq, h_seq)
 
