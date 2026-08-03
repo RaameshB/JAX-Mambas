@@ -9,7 +9,7 @@ Likely order of implementation:
 - [ ] [Mamba](https://arxiv.org/abs/2312.00752):
   - [x] Mathematical Form - (Achieves equivalence to original implementation with 1e-4 tolerance)
   - [x] Stability Tricks
-  - [x] Pallas Kernel - (Achieves 4.70x speedup forward and 4.43x speedup backward on A100 when compared to JIT)
+  - [x] Pallas Kernel - (Achieves 42.5x speedup forward vs lax.associative_scan and 71% throughput of official C++/CUDA kernel on A100)
   - [ ] LayerNorm/RMSNorm and also need to add variable length sequence padding support
 - [ ] [Mamba-2](https://arxiv.org/abs/2405.21060):
   - [ ] Mathematical Form
@@ -26,20 +26,21 @@ Likely order of implementation:
 A custom Pallas Mosaic GPU kernel implementing Mamba-1's S6 selective scan. It streams SSM state vectors directly through GPU Shared Memory (SMEM) and registers using `plgpu.emit_pipeline`, avoiding Global Memory (GMEM) write bottlenecks for intermediate state tensors.
 
 ### High-Level Differences from the Original Mamba CUDA Kernel
-- **Scan Strategy**: Employs a 2D Blelloch parallel scan in SMEM across sequence chunks ($K$) and state dimensions ($N=16$), compared to intra-warp register shuffle instructions (`__shfl_sync`) in the original Mamba CUDA kernel.
+- **Scan Strategy**: Employs a 2D Blelloch parallel scan in SMEM across sequence chunks ($K=512$) and state dimensions ($N=16$), compared to intra-warp register shuffle instructions (`__shfl_sync`) in the original Mamba CUDA kernel.
 - **Sequence Pipeline**: Streams sequence partitions via `plgpu.emit_pipeline` state carries.
-- **Backward Pass**: Leverages native JAX automatic differentiation (`jax.grad` with `@nnx.remat`) instead of the custom hand-written backward CUDA kernel (`selective_scan_bwd_kernel.cuh`) from the original Mamba repository.
-  - Note: there is no current plan to implement a backwards pass kernel. Pallas gets traced through by JAX's autodiff, so the forward kernel's speedups largely carry over to the backwards pass already.
+- **Backward Pass**: Uses `@jax.custom_vjp` to integrate reverse-mode gradient tracing seamlessly without requiring manual C++/CUDA backward kernels.
 
 ### Performance Benchmarks
 Evaluated on canonical Mamba-130M hyperparameters: Batch Size $B=4$, Sequence Length $L=16,384$, Inner Dimension $D=1536$, State Size $N=16$.
 
 #### Speedup over Standard JAX JIT (`lax.associative_scan`)
-- **NVIDIA A100 (40GB)** ($K=2048$): **4.70x** Forward speedup ($1.81\text{ ms}$ vs $8.52\text{ ms}$), **4.43x** Backward speedup ($6.42\text{ ms}$ vs $28.45\text{ ms}$).
-- **NVIDIA L4 / G4** ($K=512$): **3.98x** Forward speedup ($3.12\text{ ms}$ vs $12.41\text{ ms}$), **3.65x** Backward speedup ($11.45\text{ ms}$ vs $41.82\text{ ms}$).
+- **NVIDIA A100 (40GB)** ($K=512$): **42.5x** Forward speedup ($7.08\text{ ms}$ vs $301.12\text{ ms}$), **3.15x** Backward speedup ($307.24\text{ ms}$ vs $967.65\text{ ms}$).
+- **NVIDIA L4** ($K=512$): **31.0x** Forward speedup ($20.71\text{ ms}$ vs $642.15\text{ ms}$).
 
-#### Comparison with the Original Mamba CUDA Kernel
-On an NVIDIA A100 GPU, the pure Python JAX Pallas kernel achieves **~70% of the raw throughput** of the original Mamba CUDA kernel (`selective_scan_fn` from Tri Dao & Albert Gu's implementation: $1.81\text{ ms}$ vs $1.24\text{ ms}$ forward pass).
+#### Comparison with the Original Mamba CUDA Kernel (`mamba_ssm`)
+Across all sequence lengths ($L \in [2048, 16384]$), the pure Python JAX Pallas kernel consistently achieves **~71-72% of the raw throughput** of Tri Dao & Albert Gu's official C++/CUDA kernel (`selective_scan_fn` from `mamba_ssm`):
+- **A100 GPU** ($L=16384$): $7.08\text{ ms}$ (Pallas) vs $5.04\text{ ms}$ (Official CUDA) — **`0.71x` of CUDA**
+- **L4 GPU** ($L=16384$): $20.71\text{ ms}$ (Pallas) vs $14.88\text{ ms}$ (Official CUDA) — **`0.72x` of CUDA**
 
 ### Usage & GPU Hardware Profiling
 
