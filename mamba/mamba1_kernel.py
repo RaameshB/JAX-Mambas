@@ -14,17 +14,32 @@ def _mamba_kernel_chunk_size(seq_len):
 
 
 def blelloch_scan(A_seq, h_seq):
-    """Work-efficient 2D inclusive scan over time axis (axis 0).
+    """Parallel scan over time axis (axis 0) using jnp.roll and jnp.where.
     
     A_seq: (block_len, N)
     h_seq: (block_len, N)
     """
-    def combine(earlier, later):
-        A_e, h_e = earlier
-        A_l, h_l = later
-        return A_l * A_e, A_l * h_e + h_l
+    K, N = A_seq.shape
+    A_curr = A_seq
+    h_curr = h_seq
+    t_idx = jnp.arange(K)[:, None]
 
-    return jax.lax.associative_scan(combine, (A_seq, h_seq), axis=0)
+    for step in range(9):
+        stride = 1 << step
+        if stride >= K:
+            break
+        mask = (t_idx >= stride)
+
+        A_rolled = jnp.roll(A_curr, stride, axis=0)
+        h_rolled = jnp.roll(h_curr, stride, axis=0)
+
+        A_comb = A_curr * A_rolled
+        h_comb = A_curr * h_rolled + h_curr
+
+        A_curr = jnp.where(mask, A_comb, A_curr)
+        h_curr = jnp.where(mask, h_comb, h_curr)
+
+    return A_curr, h_curr
 
 
 def apply_reference_ssm(A, Deltas, Bs, Cs, u, N=16, use_euler_barB_approx=True, initial_x=None):
