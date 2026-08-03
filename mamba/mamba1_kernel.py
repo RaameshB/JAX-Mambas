@@ -35,6 +35,15 @@ def blelloch_scan(A_seq, h_seq):
         pair = jnp.where(idx == 0, a[:, None, :], b[:, None, :])
         return pair.reshape(T_half * 2, N)
 
+    def join_first_and_rest(first, rest):
+        K = rest.shape[0] + 1
+        N_dim = first.shape[1]
+        is_first = (jnp.arange(K)[:, None] == 0)
+        idx_map = jnp.maximum(0, jnp.arange(K) - 1)
+        rest_padded = rest[idx_map, :]
+        first_padded = jnp.broadcast_to(first, (K, N_dim))
+        return jnp.where(is_first, first_padded, rest_padded)
+
     def _scan(A_e, h_e):
         T = A_e.shape[0]
         if T == 1:
@@ -44,14 +53,12 @@ def blelloch_scan(A_seq, h_seq):
         h0, h1 = deinterleave(h_e)
         odd_A, odd_h = _scan(*combine((A0, h0), (A1, h1)))
 
-        full_comb_A, full_comb_h = combine((odd_A, odd_h), (A0, h0))
-        rolled_A = jnp.roll(full_comb_A, shift=1, axis=0)
-        rolled_h = jnp.roll(full_comb_h, shift=1, axis=0)
+        if T == 2:
+            return interleave(A0, odd_A), interleave(h0, odd_h)
 
-        T_half = A0.shape[0]
-        idx = jnp.arange(T_half)[:, None]
-        even_A = jnp.where(idx == 0, A0, rolled_A)
-        even_h = jnp.where(idx == 0, h0, rolled_h)
+        even_rest_A, even_rest_h = combine((odd_A[:-1], odd_h[:-1]), (A0[1:], h0[1:]))
+        even_A = join_first_and_rest(A0[:1], even_rest_A)
+        even_h = join_first_and_rest(h0[:1], even_rest_h)
         return interleave(even_A, odd_A), interleave(even_h, odd_h)
 
     return _scan(A_seq, h_seq)
