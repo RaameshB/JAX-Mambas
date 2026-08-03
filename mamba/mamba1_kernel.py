@@ -48,7 +48,30 @@ def blelloch_scan(A_seq, h_seq):
     return _scan(A_seq, h_seq)
 
 
-def apply_pallas_mamba_kernel(
+def apply_reference_ssm(A, Deltas, Bs, Cs, u, N=16, use_euler_barB_approx=True, initial_x=None):
+    mulDeltaA = jnp.einsum("bld,dn->bldn", Deltas, A)
+    barAs = jnp.exp(mulDeltaA)
+    if use_euler_barB_approx:
+        barBs = jnp.einsum("bld,bln->bldn", Deltas, Bs)
+    else:
+        barBs = jnp.expm1(mulDeltaA) * jnp.einsum("dn,bln->bldn", jnp.reciprocal(A), Bs)
+
+    Bu = barBs * u[..., jnp.newaxis]
+
+    def binary_operator(Aht_prev, Aht):
+        At_prev, ht_prev = Aht_prev
+        At, ht = Aht
+        return At * At_prev, At * ht_prev + ht
+
+    if initial_x is not None:
+        Bu = Bu.at[:, 0, ...].add(barAs[:, 0, ...] * initial_x[:, None, ...])
+
+    _, xs = jax.lax.associative_scan(binary_operator, (barAs, Bu), axis=1)
+    ys = jnp.einsum("bln,bldn->bld", Cs, xs)
+    return ys, xs[:, -1]
+
+
+def _apply_pallas_mamba_kernel_raw(
     A, Deltas, Bs, Cs, u,
     N: int = 16,
     use_euler_barB_approx: bool = True,
@@ -57,31 +80,8 @@ def apply_pallas_mamba_kernel(
     scan_dtype = jnp.float32,
     max_concurrent_steps: int = 1,
 ):
-    """Executes the high-performance Pallas Mosaic GPU kernel for Mamba S6.
-
-    Uses FP32 precision internally for scan accumulation matching the Mamba paper.
-    Outputs match the input activation dtype (e.g. bfloat16).
-    
-    Args:
-        A: (dim, N) SSM transition parameter matrix
-        Deltas: (batch, seq_len, dim) continuous step size
-        Bs: (batch, seq_len, N) input projection
-        Cs: (batch, seq_len, N) output projection
-        u: (batch, seq_len, dim) input sequence activations
-        N: State dimension size (default: 16)
-        use_euler_barB_approx: Use Euler barB approximation vs exact ZOH (default: True)
-        K: Chunk size for block tiling (default: 512)
-        initial_x: Optional (batch, dim, N) initial state vector for streaming chunk continuation
-        scan_dtype: Precision for internal recurrence math (default: jnp.float32)
-        max_concurrent_steps: Pipeline stage concurrency (default: 1)
-
-    Returns:
-        ys: (batch, seq_len, dim) output tensor matching input dtype
-        final_x: (batch, dim, N) final SSM state vector in scan_dtype
-    """
     batch, seq_len, dim = u.shape
 
-    # Static shape assertions
     assert A.shape == (dim, N), f"A shape must be ({dim}, {N}), got {A.shape}"
     assert Deltas.shape == (batch, seq_len, dim), f"Deltas shape must be ({batch}, {seq_len}, {dim}), got {Deltas.shape}"
     assert Bs.shape == (batch, seq_len, N), f"Bs shape must be ({batch}, {seq_len}, {N}), got {Bs.shape}"
@@ -98,7 +98,7 @@ def apply_pallas_mamba_kernel(
     n_chunks = padded_len // block_len
     kernel_n_state = N
 
-    y_dtype = u.dtype  # Output activation dtype matches input u.dtype (e.g. bfloat16)
+    y_dtype = u.dtype
 
     if padded_len != seq_len:
         time_padding = padded_len - seq_len
@@ -116,7 +116,6 @@ def apply_pallas_mamba_kernel(
         b = pl.program_id(0)
         d = pl.program_id(1)
 
-        # FP32 accumulation precision for exponentiation and recurrence stability
         A_states = jnp.array([A_ref[d, n].astype(scan_dtype) for n in range(kernel_n_state)])
         init_x = init_x_ref[b, d, :].astype(scan_dtype)
 
@@ -166,15 +165,75 @@ def apply_pallas_mamba_kernel(
         )
         final_x_ref[b, d, :] = final_x
 
-    ys_bdl, final_x = plgpu.kernel(
-        ssm_kernel,
-        out_type=(
-            ShapeDtypeStruct((batch, dim, padded_len), dtype=y_dtype),
-            ShapeDtypeStruct((batch, dim, N), dtype=scan_dtype),
-        ),
-        grid=(batch, dim),
-        grid_names=("batch", "dim"),
-    )(A, Deltas_bdl, Bs, Cs, u_bdl, init_x_val)
+    out_structs = (
+        ShapeDtypeStruct((batch, dim, padded_len), dtype=y_dtype),
+        ShapeDtypeStruct((batch, dim, N), dtype=scan_dtype),
+    )
+    try:
+        ys_bdl, final_x = plgpu.kernel(
+            ssm_kernel,
+            out_type=out_structs,
+            grid=(batch, dim),
+            grid_names=("batch", "dim"),
+        )(A, Deltas_bdl, Bs, Cs, u_bdl, init_x_val)
+    except TypeError:
+        ys_bdl, final_x = plgpu.kernel(
+            ssm_kernel,
+            out_shape=out_structs,
+            grid=(batch, dim),
+            grid_names=("batch", "dim"),
+        )(A, Deltas_bdl, Bs, Cs, u_bdl, init_x_val)
 
     ys = jnp.transpose(ys_bdl, (0, 2, 1))
     return ys[:, :seq_len, :], final_x
+
+
+from functools import partial
+
+@partial(jax.custom_vjp, nondiff_argnums=(5, 6, 7, 8, 9))
+def apply_pallas_mamba_kernel(
+    A, Deltas, Bs, Cs, u,
+    N: int = 16,
+    use_euler_barB_approx: bool = True,
+    K: int = 512,
+    scan_dtype = jnp.float32,
+    max_concurrent_steps: int = 1,
+    initial_x = None,
+):
+    ys, final_x = _apply_pallas_mamba_kernel_raw(
+        A, Deltas, Bs, Cs, u, N, use_euler_barB_approx, K, initial_x, scan_dtype, max_concurrent_steps
+    )
+    return ys, final_x
+
+
+def _apply_pallas_mamba_kernel_fwd(
+    A, Deltas, Bs, Cs, u,
+    N, use_euler_barB_approx, K, scan_dtype, max_concurrent_steps,
+    initial_x=None
+):
+    ys, final_x = _apply_pallas_mamba_kernel_raw(
+        A, Deltas, Bs, Cs, u, N, use_euler_barB_approx, K, initial_x, scan_dtype, max_concurrent_steps
+    )
+    res = (A, Deltas, Bs, Cs, u, initial_x)
+    return (ys, final_x), res
+
+
+def _apply_pallas_mamba_kernel_bwd(
+    N, use_euler_barB_approx, K, scan_dtype, max_concurrent_steps,
+    res, g
+):
+    A, Deltas, Bs, Cs, u, initial_x = res
+    g_ys, g_final_x = g
+
+    def ref_kernel_fn(A_p, Deltas_p, Bs_p, Cs_p, u_p, init_x_p):
+        return apply_reference_ssm(
+            A_p, Deltas_p, Bs_p, Cs_p, u_p,
+            N=N, use_euler_barB_approx=use_euler_barB_approx, initial_x=init_x_p
+        )
+
+    _, vjp_fn = jax.vjp(ref_kernel_fn, A, Deltas, Bs, Cs, u, initial_x)
+    g_A, g_Deltas, g_Bs, g_Cs, g_u, g_initial_x = vjp_fn((g_ys, g_final_x))
+    return g_A, g_Deltas, g_Bs, g_Cs, g_u, g_initial_x
+
+
+apply_pallas_mamba_kernel.defvjp(_apply_pallas_mamba_kernel_fwd, _apply_pallas_mamba_kernel_bwd)
