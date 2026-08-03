@@ -4,9 +4,15 @@ import jax.random as jrand
 from jax import lax
 
 class S6(nnx.Module):
-    def __init__(self, rngs:nnx.Rngs, D, N:int=64, R:int=1, complex_ssm:bool=True, use_euler_barB_approx:bool=True, use_log_A_stability_trick:bool=True, use_bf16=False, cache_states=True):
+    def __init__(self, rngs:nnx.Rngs, D, N:int=16, R:int | str="auto",
+                 complex_ssm:bool=False, use_euler_barB_approx:bool=True,
+                 use_log_A_stability_trick:bool=True, use_bf16=False,
+                 kernel_len:int=512):
 
-        self.cache_states = cache_states
+        # Kept for compatibility with Mamba's current constructor. The scan
+        # implementation does not chunk the sequence.
+        del kernel_len
+        self.N = N
 
         self.euler_barB_approx = use_euler_barB_approx
         self.log_A = use_log_A_stability_trick
@@ -35,6 +41,9 @@ class S6(nnx.Module):
             uniform = jrand.uniform(rng_key, shape, dtype, minval=1e-3, maxval=1e-1).astype(real_dtype)
             return tau_Delta_inv(uniform)
 
+        if R == "auto":
+            R = max(1, (D + 15) // 16)
+
         # Each SSM has a scalar Delta value, despite using vector-valued states (this differs from S5 in this way)
         if R==1:
             self.Linear_1 = nnx.Linear(in_features=D, out_features=1, use_bias=False, rngs=rngs, dtype=real_dtype)
@@ -44,12 +53,23 @@ class S6(nnx.Module):
         elif R>1:
             self.Linear_R = nnx.Linear(in_features=D, out_features=R, use_bias=False, rngs=rngs, dtype=real_dtype)
             self.Linear_Delta = nnx.Linear(in_features=R, out_features=D, use_bias=False, rngs=rngs, bias_init=s_Delta_bias_initializer, dtype=real_dtype)
+            self.biased_s_Delta = lambda x: self.Linear_Delta(self.Linear_R(x))
         else:
             raise ValueError("R must be 1 or greater.")
 
         self.complex_ssm = complex_ssm
 
-        self.state_caches = None
+        self.has_cache = False
+
+    def initialize_state(self, input_shape, state_init_value=None):
+        cache_shape = (input_shape[0],) + input_shape[2:] + (self.N,)
+        initial_state = (
+            jnp.zeros(cache_shape)
+            if state_init_value is None
+            else state_init_value
+        )
+        self.state_cache = nnx.Variable(initial_state)
+        self.has_cache = True
 
     def discretize(self, A, Bs, Deltas):
         mulDeltaA = jnp.einsum("bld,dn->bldn", Deltas, A)
@@ -77,84 +97,123 @@ class S6(nnx.Module):
         A_bars, B_bars = self.discretize(A, Bs, Deltas)
         Bx = B_bars * x[..., jnp.newaxis]
         _, xs = lax.associative_scan(S6.binary_operator, (A_bars, Bx), axis=1)
+        if self.has_cache:
+            self.state_cache.value = xs[:, -1]
         ys = jnp.einsum("bln,bldn->bld", Cs, xs)
 
-        self.state_caches = xs[:,-1:,...]
+        return ys if not self.complex_ssm else ys.real
 
-        return ys if not self.complex_ssm else ys.real / 2
-    def step(self, token, prev_state=None):
+    def step(self, token):
+        if not self.has_cache:
+            self.initialize_state(token.shape)
+
         A = -jnp.exp(self.A.real) + (self.A.imag * 1j if self.complex_ssm else 0) if self.log_A else self.A
         B = self.s_B(token)
         C = self.s_C(token)
         Deltas = self.tau_Delta(self.biased_s_Delta(token))
         A_bar, B_bar = self.discretize(A, B, Deltas)
-        if self.state_caches is None and prev_state is None:
-            prev_state = jnp.zeros_like(A_bar)
-        elif self.state_caches is not None and prev_state is None:
-            prev_state = self.state_caches
-        x = A_bar * prev_state + B_bar * token[..., jnp.newaxis]
-        if self.cache_states:
-            self.state_caches = x
+        previous_state = self.state_cache[:, jnp.newaxis, ...]
+        x = A_bar * previous_state + B_bar * token[..., jnp.newaxis]
+        self.state_cache.value = x[:, -1]
         y = jnp.einsum("bln,bldn->bld", C, x)
-        return y
+        return y if not self.complex_ssm else y.real
+
 
 class Mamba(nnx.Module):
     def __init__(self, rngs:nnx.Rngs,
-                 in_features:int, out_features:int,
-                 D:int, N:int=64, R:int=1,
+                 D:int, expand:int, N:int=16, R:int | str="auto",
                  causal_conv_kernel_size:int=4,
+                 use_norm=True, norm_type='layernorm',
+                    kernel_len=512,
                     use_euler_barB_approx:bool=True, complex_ssm:bool=False,
-                    use_log_A_stability_trick:bool=True, bf16=False, cache_states=True):
+                    use_log_A_stability_trick:bool=True, bf16=False):
         dtype = jnp.bfloat16 if bf16 else jnp.float32
-        self.main_proj_up = nnx.Linear(in_features=in_features, out_features=D, rngs=rngs, dtype=dtype)
-        self.skip_proj_up = nnx.Linear(in_features=in_features, out_features=D, rngs=rngs, dtype=dtype)
-        self.conv = nnx.Conv(in_features=D, out_features=D, kernel_size=causal_conv_kernel_size, feature_group_count=D,
+        self.main_proj_up = nnx.Linear(in_features=D, out_features=D*expand, rngs=rngs, dtype=dtype)
+        self.skip_proj_up = nnx.Linear(in_features=D, out_features=D*expand, rngs=rngs, dtype=dtype)
+        self.conv = nnx.Conv(in_features=D*expand, out_features=D*expand, kernel_size=causal_conv_kernel_size, feature_group_count=D*expand,
                              padding="CAUSAL", use_bias=False, rngs=rngs, dtype=dtype)
         self.sigma = nnx.silu
-        self.s6 = S6(rngs, D, N=N, R=R,
+        self.s6 = S6(rngs, D*expand, N=N, R=R, kernel_len=kernel_len,
                      use_euler_barB_approx=use_euler_barB_approx, complex_ssm=complex_ssm,
-                     use_log_A_stability_trick=use_log_A_stability_trick, use_bf16=bf16, cache_states=cache_states)
-        self.proj_down = nnx.Linear(in_features=D, out_features=out_features, rngs=rngs, dtype=dtype)
-        self.cache = None
+                     use_log_A_stability_trick=use_log_A_stability_trick, use_bf16=bf16)
+        self.proj_down = nnx.Linear(in_features=D*expand, out_features=D, rngs=rngs, dtype=dtype)
+        self.has_cache = False
+        self.D = D
+        self.expand = expand
+        self.has_norm = use_norm
+        if use_norm:
+            if norm_type == 'layernorm':
+                self.norm = nnx.LayerNorm(D, rngs=rngs)
+            elif norm_type == 'rmsnorm':
+                self.norm = nnx.RMSNorm(D, rngs=rngs)
 
+    def initialize_state(self, input_shape, state_init_value=None):
+        kernel_size = self.conv.kernel.shape[0]
+        cache_size = kernel_size - 1
+        cache_shape = (input_shape[0], cache_size, self.D*self.expand)
+        self.cache = nnx.Variable(jnp.zeros(cache_shape))
+        if state_init_value is not None:
+            cache_concat = jnp.concatenate([self.cache[...], state_init_value], axis=1)
+            self.cache.value = (
+                cache_concat[:, -cache_size:, ...]
+                if cache_size
+                else cache_concat[:, :0, ...]
+            )
+        s6_input_shape = (input_shape[0], input_shape[1], self.D * self.expand)
+        self.s6.initialize_state(s6_input_shape)
+        self.has_cache = True
 
-    @nnx.jit
+    # @nnx.jit
     def __call__(self, x):
+        res = x
+
+        if self.has_norm:
+            x = self.norm(x)
+
         projed = self.main_proj_up(x)
         skip = self.sigma(self.skip_proj_up(x))
 
-        if self.cache_states:
-            kernel_size = self.conv.kernel.shape[0]
-            self.cache = projed[:,-(kernel_size-1):, ...]
+        kernel_size = self.conv.kernel.shape[0]
+        if self.has_cache:
+            cache_size = kernel_size - 1
+            cache_concat = jnp.concatenate([self.cache[...], projed], axis=1)
+            self.cache.value = (
+                cache_concat[:, -cache_size:, ...]
+                if cache_size
+                else cache_concat[:, :0, ...]
+            )
 
         conved = self.sigma(self.conv(projed))
         ssm_out = self.s6(conved)
         muled = ssm_out * skip
         logits = self.proj_down(muled)
+
+        logits += res
+
         return logits
 
     def step(self, token):
+
+        res = token
+
+        if self.has_norm:
+            token = self.norm(token)
+
         projed = self.main_proj_up(token)
         skip = self.sigma(self.skip_proj_up(token))
 
-        if self.cache is None:
-            kernel_size = self.conv.kernel.shape[0]
-            cache_concat = jnp.pad(projed,
-                                   pad_width=(
-                                        (0,0),
-                                        (kernel_size-1, 0),
-                                        (0,0)
-                                    )
-                                   )
-        else:
-            cache_concat = jnp.concatenate([self.cache, projed], axis=1)
-        self.cache = cache_concat[:,1:,...]
+        if not self.has_cache:
+            self.initialize_state(token.shape)
 
-        conved = self.sigma(self.conv(cache_concat)[0,-1:,...])
+        cache_concat = jnp.concatenate([self.cache[...], projed], axis=1)
+        self.cache.value = cache_concat[:,1:,...]
+
+        conved = self.sigma(self.conv(cache_concat)[:,-1:,...])
+
         ssm_out = self.s6.step(conved)
         muled = ssm_out * skip
         logits = self.proj_down(muled)
 
+        logits+=res
+
         return logits
-
-
