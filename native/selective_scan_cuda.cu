@@ -165,17 +165,22 @@ __device__ __forceinline__ void StoreOutput(
     const float (&values)[KTraits::kNItems],
     typename KTraits::BlockStoreT::TempStorage& storage,
     int valid_items) {
+  float write_values[KTraits::kNItems];
+#pragma unroll
+  for (int item = 0; item < KTraits::kNItems; ++item) {
+    write_values[item] = values[item];
+  }
   if constexpr (KTraits::kIsEvenLen) {
     auto& vec_storage =
         reinterpret_cast<typename KTraits::BlockStoreVecT::TempStorage&>(
             storage);
     typename KTraits::BlockStoreVecT(vec_storage).Store(
         reinterpret_cast<typename KTraits::vec_t*>(output),
-        reinterpret_cast<const typename KTraits::vec_t (&)[KTraits::kNLoads]>(
-            values));
+        reinterpret_cast<typename KTraits::vec_t (&)[KTraits::kNLoads]>(
+            write_values));
   } else {
     typename KTraits::BlockStoreT(storage).Store(
-        output, values, valid_items);
+        output, write_values, valid_items);
   }
 }
 
