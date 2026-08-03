@@ -188,6 +188,98 @@ def _apply_pallas_mamba_kernel_raw(
     return ys[:, :seq_len, :], final_x
 
 
+def _apply_pallas_mamba_bwd_kernel_raw(
+    A, Deltas, Bs, Cs, u, g_ys,
+    N: int = 16,
+    use_euler_barB_approx: bool = True,
+    K: int = 512,
+    scan_dtype = jnp.float32,
+    max_concurrent_steps: int = 1,
+):
+    batch, seq_len, dim = u.shape
+    block_len = _mamba_kernel_chunk_size(seq_len) if K is None else K
+    padded_len = ((seq_len + block_len - 1) // block_len) * block_len
+    n_chunks = padded_len // block_len
+
+    if padded_len != seq_len:
+        time_padding = padded_len - seq_len
+        u = jnp.pad(u, ((0, 0), (0, time_padding), (0, 0)))
+        Deltas = jnp.pad(Deltas, ((0, 0), (0, time_padding), (0, 0)))
+        Bs = jnp.pad(Bs, ((0, 0), (0, time_padding), (0, 0)))
+        Cs = jnp.pad(Cs, ((0, 0), (0, time_padding), (0, 0)))
+        g_ys = jnp.pad(g_ys, ((0, 0), (0, time_padding), (0, 0)))
+
+    Deltas_rev = jnp.flip(Deltas, axis=1)
+    Cs_rev = jnp.flip(Cs, axis=1)
+    g_ys_rev = jnp.flip(g_ys, axis=1)
+
+    Deltas_bdl = jnp.transpose(Deltas_rev, (0, 2, 1))
+    g_ys_bdl = jnp.transpose(g_ys_rev, (0, 2, 1))
+    init_dx_val = jnp.zeros((batch, dim, N), dtype=scan_dtype)
+
+    def ssm_bwd_kernel(A_ref, Delta_ref, C_ref, g_y_ref, init_dx_ref, dx_ref):
+        b = pl.program_id(0)
+        d = pl.program_id(1)
+
+        A_states = jnp.array([A_ref[d, n].astype(scan_dtype) for n in range(N)])
+        init_dx = init_dx_ref[b, d, :].astype(scan_dtype)
+
+        def chunk_body(_, Delta_smem, C_smem, g_y_smem, dx_smem, dx_carry):
+            deltas = Delta_smem[:].astype(scan_dtype)
+            g_y = g_y_smem[:].astype(scan_dtype)
+            C_mat = C_smem[:, :].astype(scan_dtype)
+
+            delta_A = deltas[:, None] * A_states[None, :]
+            A_bars = jnp.exp(delta_A)
+            v_inputs = C_mat * g_y[:, None]
+
+            A_cum, h_cum = blelloch_scan(A_bars, v_inputs)
+            dxs = A_cum * dx_carry[None, :] + h_cum
+
+            dx_smem[:, :] = dxs.astype(scan_dtype)
+            return dxs[-1]
+
+        pipeline = plgpu.emit_pipeline(
+            chunk_body,
+            grid=(n_chunks,),
+            in_specs=[
+                plgpu.BlockSpec((block_len,), lambda chunk: (chunk,)),
+                plgpu.BlockSpec((block_len, N), lambda chunk: (chunk, 0)),
+                plgpu.BlockSpec((block_len,), lambda chunk: (chunk,)),
+            ],
+            out_specs=[
+                plgpu.BlockSpec((block_len, N), lambda chunk: (chunk, 0)),
+            ],
+            max_concurrent_steps=max_concurrent_steps,
+            init_carry=init_dx,
+        )
+        final_dx = pipeline(
+            Delta_ref.at[b, d],
+            C_ref.at[b],
+            g_y_ref.at[b, d],
+            dx_ref.at[b, d],
+        )
+
+    out_structs = ShapeDtypeStruct((batch, dim, padded_len, N), dtype=scan_dtype)
+    try:
+        dx_bdl = plgpu.kernel(
+            ssm_bwd_kernel,
+            out_type=out_structs,
+            grid=(batch, dim),
+            grid_names=("batch", "dim"),
+        )(A, Deltas_bdl, Cs_rev, g_ys_bdl, init_dx_val)
+    except TypeError:
+        dx_bdl = plgpu.kernel(
+            ssm_bwd_kernel,
+            out_shape=out_structs,
+            grid=(batch, dim),
+            grid_names=("batch", "dim"),
+        )(A, Deltas_bdl, Cs_rev, g_ys_bdl, init_dx_val)
+
+    dx_rev = jnp.transpose(dx_bdl, (0, 2, 1, 3))
+    return jnp.flip(dx_rev[:, :seq_len, :, :], axis=1)
+
+
 from functools import partial
 
 @partial(jax.custom_vjp, nondiff_argnums=(5, 6, 7, 8, 9))
@@ -225,14 +317,24 @@ def _apply_pallas_mamba_kernel_bwd(
     A, Deltas, Bs, Cs, u, initial_x = res
     g_ys, g_final_x = g
 
-    def ref_kernel_fn(A_p, Deltas_p, Bs_p, Cs_p, u_p, init_x_p):
-        return apply_reference_ssm(
-            A_p, Deltas_p, Bs_p, Cs_p, u_p,
-            N=N, use_euler_barB_approx=use_euler_barB_approx, initial_x=init_x_p
-        )
+    dx_rev = _apply_pallas_mamba_bwd_kernel_raw(
+        A, Deltas, Bs, Cs, u, g_ys, N=N, use_euler_barB_approx=use_euler_barB_approx, K=K, scan_dtype=scan_dtype, max_concurrent_steps=max_concurrent_steps
+    )
 
-    _, vjp_fn = jax.vjp(ref_kernel_fn, A, Deltas, Bs, Cs, u, initial_x)
-    g_A, g_Deltas, g_Bs, g_Cs, g_u, g_initial_x = vjp_fn((g_ys, g_final_x))
+    mulDeltaA = jnp.einsum("bld,dn->bldn", Deltas, A)
+    barAs = jnp.exp(mulDeltaA)
+    if use_euler_barB_approx:
+        barBs = jnp.einsum("bld,bln->bldn", Deltas, Bs)
+    else:
+        barBs = jnp.expm1(mulDeltaA) * jnp.einsum("dn,bln->bldn", jnp.reciprocal(A), Bs)
+
+    g_u = jnp.einsum("bldn,bldn->bld", barBs, dx_rev * Cs[..., None, :])
+    g_Cs = jnp.einsum("bld,bldn->bln", g_ys, dx_rev * barBs)
+    g_Bs = jnp.einsum("bld,bldn->bln", u, dx_rev * Deltas[..., None])
+    g_Deltas = jnp.einsum("bldn,bldn->bld", A[None, None, ...], dx_rev * barAs)
+    g_A = jnp.einsum("bld,bldn->dn", Deltas, dx_rev * barAs)
+    g_initial_x = dx_rev[:, 0, ...] * barAs[:, 0, ...]
+
     return g_A, g_Deltas, g_Bs, g_Cs, g_u, g_initial_x
 
 
