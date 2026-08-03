@@ -50,11 +50,17 @@ def blelloch_scan(A_seq, h_seq):
         A0, A1 = deinterleave(A_e)
         h0, h1 = deinterleave(h_e)
         odd_A, odd_h = _scan(*combine((A0, h0), (A1, h1)))
-        even_rest_A, even_rest_h = combine((odd_A[:-1], odd_h[:-1]), (A0[1:], h0[1:]))
 
         T_half = A0.shape[0]
-        even_A = jnp.pad(A0[:1], ((0, T_half - 1), (0, 0))) + jnp.pad(even_rest_A, ((1, 0), (0, 0)))
-        even_h = jnp.pad(h0[:1], ((0, T_half - 1), (0, 0))) + jnp.pad(even_rest_h, ((1, 0), (0, 0)))
+        idx = jnp.arange(T_half)[:, None]
+        prev_idx = jnp.maximum(0, idx[:, 0] - 1)
+
+        odd_A_shifted = odd_A[prev_idx, :]
+        odd_h_shifted = odd_h[prev_idx, :]
+
+        A_comb, h_comb = combine((odd_A_shifted, odd_h_shifted), (A0, h0))
+        even_A = jnp.where(idx == 0, A0, A_comb)
+        even_h = jnp.where(idx == 0, h0, h_comb)
         return interleave(even_A, odd_A), interleave(even_h, odd_h)
 
     return _scan(A_seq, h_seq)
