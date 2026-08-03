@@ -38,6 +38,7 @@ jobs:
           .venv/bin/cmake -S native -B native/build-fat \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_MAKE_PROGRAM="$PWD/.venv/bin/ninja" \
             -DPython_EXECUTABLE="$PWD/.venv/bin/python" \
             -DMAMBA_CUDA_ARCHITECTURES="80;89;120"
           .venv/bin/cmake --build native/build-fat
