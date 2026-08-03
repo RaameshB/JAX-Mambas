@@ -31,34 +31,28 @@ def blelloch_scan(A_seq, h_seq):
 
     def interleave(a, b):
         T_half, N = a.shape
-        idx = jnp.arange(2)[None, :, None]
-        pair = jnp.where(idx == 0, a[:, None, :], b[:, None, :])
+        pair = jnp.zeros((T_half, 2, N), dtype=a.dtype)
+        pair = pair.at[:, 0, :].set(a)
+        pair = pair.at[:, 1, :].set(b)
         return pair.reshape(T_half * 2, N)
-
-    def join_first_and_rest(first, rest):
-        K = rest.shape[0] + 1
-        N_dim = first.shape[1]
-        is_first = (jnp.arange(K)[:, None] == 0)
-        idx_map = jnp.maximum(0, jnp.arange(K) - 1)
-        rest_padded = rest[idx_map, :]
-        first_padded = jnp.broadcast_to(first, (K, N_dim))
-        return jnp.where(is_first, first_padded, rest_padded)
 
     def _scan(A_e, h_e):
         T = A_e.shape[0]
         if T == 1:
             return A_e, h_e
+        if T == 2:
+            A0, A1 = A_e[:1], A_e[1:]
+            h0, h1 = h_e[:1], h_e[1:]
+            odd_A, odd_h = combine((A0, h0), (A1, h1))
+            return interleave(A0, odd_A), interleave(h0, odd_h)
 
         A0, A1 = deinterleave(A_e)
         h0, h1 = deinterleave(h_e)
         odd_A, odd_h = _scan(*combine((A0, h0), (A1, h1)))
-
-        if T == 2:
-            return interleave(A0, odd_A), interleave(h0, odd_h)
-
         even_rest_A, even_rest_h = combine((odd_A[:-1], odd_h[:-1]), (A0[1:], h0[1:]))
-        even_A = join_first_and_rest(A0[:1], even_rest_A)
-        even_h = join_first_and_rest(h0[:1], even_rest_h)
+
+        even_A = A0.at[1:].set(even_rest_A)
+        even_h = h0.at[1:].set(even_rest_h)
         return interleave(even_A, odd_A), interleave(even_h, odd_h)
 
     return _scan(A_seq, h_seq)
