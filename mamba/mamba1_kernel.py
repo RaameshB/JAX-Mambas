@@ -31,8 +31,9 @@ def blelloch_scan(A_seq, h_seq):
 
     def interleave(a, b):
         T_half, N = a.shape
-        e0 = jnp.array([[[1.0], [0.0]]], dtype=a.dtype)
-        e1 = jnp.array([[[0.0], [1.0]]], dtype=b.dtype)
+        idx = jnp.arange(2)[None, :, None]
+        e0 = (idx == 0).astype(a.dtype)
+        e1 = (idx == 1).astype(b.dtype)
         pair = a[:, None, :] * e0 + b[:, None, :] * e1
         return pair.reshape(T_half * 2, N)
 
