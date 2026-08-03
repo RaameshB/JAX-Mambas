@@ -3,15 +3,18 @@ import jax.numpy as jnp
 import jax.random as jrand
 from jax import lax
 
+from selective_scan_cuda import selective_scan
+
 class S6(nnx.Module):
     def __init__(self, rngs:nnx.Rngs, D, N:int=16, R:int | str="auto",
                  complex_ssm:bool=False, use_euler_barB_approx:bool=True,
                  use_log_A_stability_trick:bool=True, use_bf16=False,
-                 kernel_len:int=512):
+                 kernel_len:int=512, use_kernel:bool=False):
 
         # Kept for compatibility with Mamba's current constructor. The scan
         # implementation does not chunk the sequence.
         del kernel_len
+        self.use_kernel = use_kernel
         self.N = N
 
         self.euler_barB_approx = use_euler_barB_approx
@@ -94,12 +97,28 @@ class S6(nnx.Module):
         Bs = self.s_B(x)
         Cs = self.s_C(x)
         Deltas = self.tau_Delta(self.biased_s_Delta(x))
-        A_bars, B_bars = self.discretize(A, Bs, Deltas)
-        Bx = B_bars * x[..., jnp.newaxis]
-        _, xs = lax.associative_scan(S6.binary_operator, (A_bars, Bx), axis=1)
-        if self.has_cache:
-            self.state_cache.value = xs[:, -1]
-        ys = jnp.einsum("bln,bldn->bld", Cs, xs)
+
+        if self.complex_ssm:
+            A_bars, B_bars = self.discretize(A, Bs, Deltas)
+            Bx = B_bars * x[..., jnp.newaxis]
+            _, xs = lax.associative_scan(S6.binary_operator, (A_bars, Bx), axis=1)
+            if self.has_cache:
+                self.state_cache.value = xs[:, -1]
+            ys = jnp.einsum("bln,bldn->bld", Cs, xs)
+        else:
+            initial_x = self.state_cache[...] if self.has_cache else None
+            ys, final_x = selective_scan(
+                A,
+                Deltas,
+                Bs,
+                Cs,
+                x,
+                initial_x,
+                use_euler_barB_approx=self.euler_barB_approx,
+                use_cuda=self.use_kernel,
+            )
+            if self.has_cache:
+                self.state_cache.value = final_x
 
         return ys if not self.complex_ssm else ys.real
 
@@ -125,6 +144,7 @@ class Mamba(nnx.Module):
                  causal_conv_kernel_size:int=4,
                  use_norm=True, norm_type='layernorm',
                     kernel_len=512,
+                    use_kernel=False,
                     use_euler_barB_approx:bool=True, complex_ssm:bool=False,
                     use_log_A_stability_trick:bool=True, bf16=False):
         dtype = jnp.bfloat16 if bf16 else jnp.float32
@@ -134,6 +154,7 @@ class Mamba(nnx.Module):
                              padding="CAUSAL", use_bias=False, rngs=rngs, dtype=dtype)
         self.sigma = nnx.silu
         self.s6 = S6(rngs, D*expand, N=N, R=R, kernel_len=kernel_len,
+                     use_kernel=use_kernel,
                      use_euler_barB_approx=use_euler_barB_approx, complex_ssm=complex_ssm,
                      use_log_A_stability_trick=use_log_A_stability_trick, use_bf16=bf16)
         self.proj_down = nnx.Linear(in_features=D*expand, out_features=D, rngs=rngs, dtype=dtype)
