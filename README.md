@@ -9,7 +9,7 @@ Likely order of implementation:
 - [ ] [Mamba](https://arxiv.org/abs/2312.00752):
   - [x] Mathematical Form - (Achieves equivalence to original implementation with 1e-4 tolerance)
   - [x] Stability Tricks
-  - [x] Pallas Kernel - (Achieves 42.5x speedup forward vs lax.associative_scan and 71% throughput of official C++/CUDA kernel on A100)
+  - [x] Pallas Kernel - (Achieves 42.5x forward / 41.3x backward speedup vs lax.associative_scan and ~71-78% of official C++/CUDA kernel throughput on A100)
   - [ ] LayerNorm/RMSNorm and also need to add variable length sequence padding support
 - [ ] [Mamba-2](https://arxiv.org/abs/2405.21060):
   - [ ] Mathematical Form
@@ -28,19 +28,19 @@ A custom Pallas Mosaic GPU kernel implementing Mamba-1's S6 selective scan. It s
 ### High-Level Differences from the Original Mamba CUDA Kernel
 - **Scan Strategy**: Employs a 2D Blelloch parallel scan in SMEM across sequence chunks ($K=512$) and state dimensions ($N=16$), compared to intra-warp register shuffle instructions (`__shfl_sync`) in the original Mamba CUDA kernel.
 - **Sequence Pipeline**: Streams sequence partitions via `plgpu.emit_pipeline` state carries.
-- **Backward Pass**: Uses `@jax.custom_vjp` to integrate reverse-mode gradient tracing seamlessly without requiring manual C++/CUDA backward kernels. (Note: A dedicated Pallas backward scan kernel `_apply_pallas_mamba_bwd_kernel` is planned for future work to close the backward pass latency gap with Tri Dao's handwritten CUDA backward kernel).
+- **Backward Pass**: Implements a dedicated Pallas GPU backward scan kernel (`_apply_pallas_mamba_bwd_kernel_raw`) registered via `@jax.custom_vjp`, executing time-reversed parallel Blelloch scans directly in GPU SRAM.
 
 ### Performance Benchmarks
 Evaluated on canonical Mamba-130M hyperparameters: Batch Size $B=4$, Sequence Length $L=16,384$, Inner Dimension $D=1536$, State Size $N=16$.
 
 #### Speedup over Standard JAX JIT (`lax.associative_scan`)
-- **NVIDIA A100 (40GB)** ($K=512$): **42.5x** Forward speedup ($7.08\text{ ms}$ vs $301.12\text{ ms}$), **3.15x** Backward speedup ($307.24\text{ ms}$ vs $967.65\text{ ms}$).
+- **NVIDIA A100 (40GB)** ($K=512$): **42.5x** Forward speedup ($7.08\text{ ms}$ vs $301.12\text{ ms}$), **41.3x** Backward speedup ($23.41\text{ ms}$ vs $967.65\text{ ms}$).
 - **NVIDIA L4** ($K=512$): **31.0x** Forward speedup ($20.71\text{ ms}$ vs $642.15\text{ ms}$).
 
 #### Comparison with the Original Mamba CUDA Kernel (`mamba_ssm`)
-On an NVIDIA A100 GPU ($L=16,384$):
-- **Forward Pass**: Pallas Mosaic GPU kernel achieves **71% of raw throughput** of Tri Dao & Albert Gu's C++/CUDA kernel ($7.08\text{ ms}$ vs $5.04\text{ ms}$).
-- **Backward Pass**: Tri Dao's handwritten CUDA backward kernel (`selective_scan_bwd_kernel.cuh`) runs in **$18.24\text{ ms}$** vs our current `@jax.custom_vjp` reference scan fallback of **$307.24\text{ ms}$** (highlighting the future speedup opportunity for a dedicated Pallas backward scan kernel).
+On an NVIDIA A100 GPU ($L=16,384$), our pure Python JAX Pallas kernel achieves **~71-78% of the raw throughput** of Tri Dao & Albert Gu's official C++/CUDA kernels:
+- **Forward Pass**: **`7.08 ms`** (Pallas) vs **`5.04 ms`** (Official CUDA) — **`0.71x` of CUDA**
+- **Backward Pass**: **`23.41 ms`** (Pallas) vs **`18.24 ms`** (Official CUDA) — **`0.78x` of CUDA**
 
 ### Usage & GPU Hardware Profiling
 
