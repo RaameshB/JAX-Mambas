@@ -31,26 +31,30 @@ def blelloch_scan(A_seq, h_seq):
 
     def interleave(a, b):
         T_half, N = a.shape
-        stacked = jnp.stack([a, b], axis=1)
-        return stacked.reshape(T_half * 2, N)
+        idx = jnp.arange(2)[None, :, None]
+        pair = jnp.where(idx == 0, a[:, None, :], b[:, None, :])
+        return pair.reshape(T_half * 2, N)
 
     def _scan(A_e, h_e):
         T = A_e.shape[0]
         if T == 1:
             return A_e, h_e
-        if T == 2:
-            A0, A1 = A_e[:1], A_e[1:]
-            h0, h1 = h_e[:1], h_e[1:]
-            odd_A, odd_h = combine((A0, h0), (A1, h1))
-            return interleave(A0, odd_A), interleave(h0, odd_h)
 
         A0, A1 = deinterleave(A_e)
         h0, h1 = deinterleave(h_e)
         odd_A, odd_h = _scan(*combine((A0, h0), (A1, h1)))
-        even_rest_A, even_rest_h = combine((odd_A[:-1], odd_h[:-1]), (A0[1:], h0[1:]))
 
-        even_A = A0.at[1:].set(even_rest_A)
-        even_h = h0.at[1:].set(even_rest_h)
+        K = A0.shape[0]
+        A0_up = jnp.roll(A0, shift=-1, axis=0)
+        h0_up = jnp.roll(h0, shift=-1, axis=0)
+        comb_A, comb_h = combine((odd_A, odd_h), (A0_up, h0_up))
+
+        rolled_A = jnp.roll(comb_A, shift=1, axis=0)
+        rolled_h = jnp.roll(comb_h, shift=1, axis=0)
+
+        mask = (jnp.arange(K)[:, None] == 0)
+        even_A = jnp.where(mask, A0, rolled_A)
+        even_h = jnp.where(mask, h0, rolled_h)
         return interleave(even_A, odd_A), interleave(even_h, odd_h)
 
     return _scan(A_seq, h_seq)
