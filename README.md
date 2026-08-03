@@ -39,6 +39,24 @@ cmake -S native -B native/build \
 cmake --build native/build -j
 ```
 
+The release workflow uses CUDA 13.3 to produce one fat shared library
+containing native code for A100 (`sm_80`), L4 (`sm_89`), and G4 (`sm_120`).
+The same build can be reproduced with a CUDA 13 Python/build environment:
+
+```bash
+cmake -S native -B native/build-fat \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DPython_EXECUTABLE="$(command -v python)" \
+  -DMAMBA_CUDA_ARCHITECTURES="80;89;120"
+cmake --build native/build-fat -j
+cmake --install native/build-fat --prefix native/prebuilt
+```
+
+Release binaries include `LICENSE`, `LICENSE-APACHE`, and `NOTICE`.
+The loader searches `native/build`, `native/prebuilt`, and `native` by default;
+a downloaded binary can also be passed explicitly to
+`register_cuda_kernel(path)`.
+
 Enable it with `S6(..., use_kernel=True)` or `Mamba(..., use_kernel=True)`.
 The current CUDA path supports real float32 inputs and `N` in
 `{1, 2, 4, 8, 16}`. Euler and ZOH discretization, nonzero initial states, JIT,
@@ -48,3 +66,22 @@ reference implementation, so only the forward pass is accelerated.
 On a Colab L4 at `B=1, D=256, N=16`, the CUDA forward path was approximately
 at parity with `lax.associative_scan` for lengths 512 and 2048, and 2.0x faster
 at length 8192. Run `python benchmark_selective_scan.py` to benchmark locally.
+
+Against Mamba v2.3.2's official float32 forward kernel on an A100-SXM4-40GB
+(`B=1, D=256, N=16`), this experimental kernel is currently slower:
+
+| Length | This kernel (median) | Official Mamba (median) | Official speedup |
+| ---: | ---: | ---: | ---: |
+| 512 | 0.403 ms | 0.041 ms | 9.8x |
+| 2048 | 0.702 ms | 0.063 ms | 11.2x |
+| 8192 | 1.037 ms | 0.183 ms | 5.7x |
+
+Both paths used float32 Euler discretization and zero initial state. Maximum
+observed output/state error was `1.2e-7`. These are end-to-end framework call
+timings (JAX FFI versus PyTorch extension), not isolated CUDA-event timings.
+
+## License
+
+The original JAX-Mambas code is available under the MIT License. The adapted
+CUDA selective-scan implementation is available under Apache-2.0; see
+`LICENSE-APACHE` and `NOTICE` for its upstream attribution.

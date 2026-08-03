@@ -4,6 +4,20 @@ project(mamba_selective_scan LANGUAGES CXX CUDA)
 find_package(Python REQUIRED COMPONENTS Interpreter)
 find_package(CUDAToolkit REQUIRED)
 
+set(
+  MAMBA_CUDA_ARCHITECTURES
+  ""
+  CACHE STRING
+  "CUDA architectures to embed (for example: 80;89;120)"
+)
+
+if(
+  MAMBA_CUDA_ARCHITECTURES MATCHES "(^|;)120($|;)"
+  AND CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 12.8
+)
+  message(FATAL_ERROR "sm_120 requires CUDA 12.8 or newer")
+endif()
+
 execute_process(
   COMMAND "${Python_EXECUTABLE}" -c
           "import jax.ffi; print(jax.ffi.include_dir(), end='')"
@@ -23,8 +37,17 @@ set_target_properties(
     POSITION_INDEPENDENT_CODE YES
 )
 
+if(MAMBA_CUDA_ARCHITECTURES)
+  set_target_properties(
+    mamba_selective_scan
+    PROPERTIES CUDA_ARCHITECTURES "${MAMBA_CUDA_ARCHITECTURES}"
+  )
+endif()
+
 target_compile_options(
   mamba_selective_scan
   PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
 )
+
+install(TARGETS mamba_selective_scan LIBRARY DESTINATION .)

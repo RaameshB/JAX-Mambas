@@ -17,6 +17,7 @@ _REGISTERED = False
 def _library_candidates():
     root = Path(__file__).resolve().parent
     yield root / "native" / "build" / "libmamba_selective_scan.so"
+    yield root / "native" / "prebuilt" / "libmamba_selective_scan.so"
     yield root / "native" / "libmamba_selective_scan.so"
 
 
@@ -174,7 +175,7 @@ def selective_scan(
     use_euler_barB_approx=True,
     use_cuda=False,
 ):
-    """Run the reference scan or the optional Thrust CUDA implementation."""
+    """Run the reference scan or the optional CUB CUDA implementation."""
     if initial_x is None:
         initial_x = jnp.zeros(
             (u.shape[0], u.shape[2], A.shape[1]), dtype=jnp.result_type(A, u)
