@@ -3,8 +3,6 @@ name: Build CUDA fat binary
 on:
   workflow_dispatch:
   push:
-    branches:
-      - cuda-selective-scan
     tags:
       - "cuda-v*"
 
