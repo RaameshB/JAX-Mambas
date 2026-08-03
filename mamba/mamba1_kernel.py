@@ -35,8 +35,15 @@ def blelloch_scan(A_seq, h_seq):
         return stacked.reshape(T_half * 2, N)
 
     def _scan(A_e, h_e):
-        if A_e.shape[0] == 1:
+        T = A_e.shape[0]
+        if T == 1:
             return A_e, h_e
+        if T == 2:
+            A0, A1 = A_e[:1], A_e[1:]
+            h0, h1 = h_e[:1], h_e[1:]
+            odd_A, odd_h = combine((A0, h0), (A1, h1))
+            return interleave(A0, odd_A), interleave(h0, odd_h)
+
         A0, A1 = deinterleave(A_e)
         h0, h1 = deinterleave(h_e)
         odd_A, odd_h = _scan(*combine((A0, h0), (A1, h1)))
