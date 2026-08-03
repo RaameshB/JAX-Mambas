@@ -13,7 +13,47 @@ def _mamba_kernel_chunk_size(seq_len):
     return 512
 
 
-    return jax.lax.associative_scan(combine, (A_seq, h_seq), axis=0)
+def blelloch_scan(A_seq, h_seq):
+    """Work-efficient 2D (Blelloch) inclusive scan over time axis (axis 0).
+    
+    A_seq: (block_len, N)
+    h_seq: (block_len, N)
+    """
+    def combine(earlier, later):
+        A_e, h_e = earlier
+        A_l, h_l = later
+        return A_l * A_e, A_l * h_e + h_l
+
+    def deinterleave(v):
+        T, N = v.shape
+        pair = v.reshape(T // 2, 2, N)
+        return pair[:, 0, :], pair[:, 1, :]
+
+    def interleave(a, b):
+        T_half, N = a.shape
+        stacked = jnp.stack([a, b], axis=1)
+        return stacked.reshape(T_half * 2, N)
+
+    def _scan(A_e, h_e):
+        T = A_e.shape[0]
+        if T == 1:
+            return A_e, h_e
+        if T == 2:
+            A0, A1 = A_e[:1], A_e[1:]
+            h0, h1 = h_e[:1], h_e[1:]
+            odd_A, odd_h = combine((A0, h0), (A1, h1))
+            return interleave(A0, odd_A), interleave(h0, odd_h)
+
+        A0, A1 = deinterleave(A_e)
+        h0, h1 = deinterleave(h_e)
+        odd_A, odd_h = _scan(*combine((A0, h0), (A1, h1)))
+        even_rest_A, even_rest_h = combine((odd_A[:-1], odd_h[:-1]), (A0[1:], h0[1:]))
+
+        even_A = A0.at[1:].set(even_rest_A)
+        even_h = h0.at[1:].set(even_rest_h)
+        return interleave(even_A, odd_A), interleave(even_h, odd_h)
+
+    return _scan(A_seq, h_seq)
 
 
 def apply_reference_ssm(A, Deltas, Bs, Cs, u, N=16, use_euler_barB_approx=True, initial_x=None):
