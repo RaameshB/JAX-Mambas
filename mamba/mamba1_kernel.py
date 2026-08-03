@@ -86,7 +86,7 @@ def _apply_pallas_mamba_kernel_raw(
     K: int = 512,
     initial_x = None,
     scan_dtype = jnp.float32,
-    max_concurrent_steps: int = 1,
+    max_concurrent_steps: int = 2,
 ):
     batch, seq_len, dim = u.shape
 
@@ -202,7 +202,7 @@ def _apply_pallas_mamba_bwd_kernel_raw(
     use_euler_barB_approx: bool = True,
     K: int = 512,
     scan_dtype = jnp.float32,
-    max_concurrent_steps: int = 1,
+    max_concurrent_steps: int = 2,
 ):
     batch, seq_len, dim = u.shape
     block_len = _mamba_kernel_chunk_size(seq_len) if K is None else K
