@@ -1,4 +1,4 @@
-// Copyright 2023 Tri Dao and Albert Gu
+// Copyright (c) 2023 Tri Dao
 // Modifications Copyright 2026 Raamesh
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -7,150 +7,308 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 //
-// This file was modified from the Mamba selective-scan implementation:
-// https://github.com/state-spaces/mamba
+// This file ports the float32 forward path from Mamba v2.3.2's
+// selective_scan_fwd_kernel.cuh to JAX's typed XLA FFI. The CUB I/O and scan
+// structure, launch tuning, vectorization, and occupancy hints are retained.
 
 #include <cuda_runtime_api.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <initializer_list>
 #include <string>
+#include <type_traits>
 
+#include <cub/block/block_load.cuh>
 #include <cub/block/block_scan.cuh>
+#include <cub/block/block_store.cuh>
 
 #include "xla/ffi/api/c_api.h"
 #include "xla/ffi/api/ffi.h"
-
-// The chunk loop, launch sizes, and CUB BlockScan strategy are adapted from
-// state-spaces/mamba's Apache-2.0 selective_scan_fwd_kernel.cuh.
 
 namespace ffi = xla::ffi;
 
 namespace {
 
-struct ComposeAffine {
-  __device__ float2 operator()(const float2& left, const float2& right) const {
-    return make_float2(
-        right.x * left.x,
-        right.x * left.y + right.y);
+constexpr int kMaxDState = 256;
+
+constexpr size_t CustomMax(std::initializer_list<size_t> values) {
+  return std::max(values);
+}
+
+template <int Bytes>
+struct BytesToType;
+
+template <>
+struct BytesToType<16> {
+  using Type = uint4;
+};
+
+template <>
+struct BytesToType<8> {
+  using Type = uint64_t;
+};
+
+template <>
+struct BytesToType<4> {
+  using Type = uint32_t;
+};
+
+struct SSMScanOp {
+  __device__ __forceinline__ float2 operator()(
+      const float2& ab0, const float2& ab1) const {
+    return make_float2(ab1.x * ab0.x, ab1.x * ab0.y + ab1.y);
   }
 };
 
-struct PrefixCallback {
+struct SSMScanPrefixCallbackOp {
   float2 running_prefix;
 
-  __device__ explicit PrefixCallback(float2 prefix) : running_prefix(prefix) {}
+  __device__ explicit SSMScanPrefixCallbackOp(float2 running_prefix_)
+      : running_prefix(running_prefix_) {}
 
   __device__ float2 operator()(float2 block_aggregate) {
     const float2 old_prefix = running_prefix;
-    running_prefix = ComposeAffine{}(running_prefix, block_aggregate);
+    running_prefix = SSMScanOp{}(running_prefix, block_aggregate);
     return old_prefix;
   }
 };
 
-template <int N, int THREADS, int ITEMS>
-__global__ __launch_bounds__(THREADS)
-void SelectiveScanKernel(
-    const float* a,
-    const float* deltas,
-    const float* bs,
-    const float* cs,
-    const float* u,
-    const float* initial_x,
-    float* y,
-    float* final_x,
-    int64_t length,
-    int64_t dim,
-    int32_t discretization) {
-  using BlockScan = cub::BlockScan<float2, THREADS, cub::BLOCK_SCAN_WARP_SCANS>;
-  __shared__ typename BlockScan::TempStorage scan_storage;
-  __shared__ float2 running_prefix[N];
+template <int NThreads, int NItems, bool IsEvenLen>
+struct SelectiveScanFwdKernelTraits {
+  static_assert(NItems % 4 == 0);
+  static constexpr int kNThreads = NThreads;
+  static constexpr int kNItems = NItems;
+  static constexpr int kMinBlocks = NThreads < 128 ? 5 : 3;
+  static constexpr int kNElts = 4;
+  static constexpr int kNLoads = NItems / kNElts;
+  static constexpr bool kIsEvenLen = IsEvenLen;
+  static constexpr bool kDirectIO = IsEvenLen && kNLoads == 1;
 
-  const int64_t batch_index = blockIdx.x;
-  const int64_t channel = blockIdx.y;
-  const int64_t state_offset = (batch_index * dim + channel) * N;
-  if (threadIdx.x < N) {
-    running_prefix[threadIdx.x] =
-        make_float2(1.0f, initial_x[state_offset + threadIdx.x]);
+  using vec_t = typename BytesToType<sizeof(float) * kNElts>::Type;
+  using BlockLoadT = cub::BlockLoad<
+      float, NThreads, NItems, cub::BLOCK_LOAD_WARP_TRANSPOSE>;
+  using BlockLoadVecT = cub::BlockLoad<
+      vec_t,
+      NThreads,
+      kNLoads,
+      kDirectIO ? cub::BLOCK_LOAD_DIRECT : cub::BLOCK_LOAD_WARP_TRANSPOSE>;
+  using BlockLoadWeightT = cub::BlockLoad<
+      float, NThreads, NItems, cub::BLOCK_LOAD_WARP_TRANSPOSE>;
+  using BlockLoadWeightVecT = cub::BlockLoad<
+      vec_t,
+      NThreads,
+      kNLoads,
+      kDirectIO ? cub::BLOCK_LOAD_DIRECT : cub::BLOCK_LOAD_WARP_TRANSPOSE>;
+  using BlockStoreT = cub::BlockStore<
+      float, NThreads, NItems, cub::BLOCK_STORE_WARP_TRANSPOSE>;
+  using BlockStoreVecT = cub::BlockStore<
+      vec_t,
+      NThreads,
+      kNLoads,
+      kDirectIO ? cub::BLOCK_STORE_DIRECT : cub::BLOCK_STORE_WARP_TRANSPOSE>;
+  using BlockScanT =
+      cub::BlockScan<float2, NThreads, cub::BLOCK_SCAN_WARP_SCANS>;
+
+  static constexpr int kSmemIOSize = CustomMax(
+      {sizeof(typename BlockLoadT::TempStorage),
+       2 * sizeof(typename BlockLoadWeightT::TempStorage),
+       sizeof(typename BlockStoreT::TempStorage)});
+  static constexpr int kSmemSize =
+      kSmemIOSize + sizeof(typename BlockScanT::TempStorage);
+};
+
+template <typename KTraits>
+__device__ __forceinline__ void LoadInput(
+    const float* input,
+    float (&values)[KTraits::kNItems],
+    typename KTraits::BlockLoadT::TempStorage& storage,
+    int valid_items) {
+  if constexpr (KTraits::kIsEvenLen) {
+    auto& vec_storage =
+        reinterpret_cast<typename KTraits::BlockLoadVecT::TempStorage&>(
+            storage);
+    typename KTraits::BlockLoadVecT(vec_storage).Load(
+        reinterpret_cast<const typename KTraits::vec_t*>(input),
+        reinterpret_cast<typename KTraits::vec_t (&)[KTraits::kNLoads]>(
+            values));
+  } else {
+    typename KTraits::BlockLoadT(storage).Load(
+        input, values, valid_items, 0.0f);
+  }
+}
+
+template <typename KTraits>
+__device__ __forceinline__ void LoadWeight(
+    const float* input,
+    float (&values)[KTraits::kNItems],
+    typename KTraits::BlockLoadWeightT::TempStorage& storage,
+    int valid_items) {
+  if constexpr (KTraits::kIsEvenLen) {
+    auto& vec_storage =
+        reinterpret_cast<typename KTraits::BlockLoadWeightVecT::TempStorage&>(
+            storage);
+    typename KTraits::BlockLoadWeightVecT(vec_storage).Load(
+        reinterpret_cast<const typename KTraits::vec_t*>(input),
+        reinterpret_cast<typename KTraits::vec_t (&)[KTraits::kNLoads]>(
+            values));
+  } else {
+    typename KTraits::BlockLoadWeightT(storage).Load(
+        input, values, valid_items, 0.0f);
+  }
+}
+
+template <typename KTraits>
+__device__ __forceinline__ void StoreOutput(
+    float* output,
+    const float (&values)[KTraits::kNItems],
+    typename KTraits::BlockStoreT::TempStorage& storage,
+    int valid_items) {
+  if constexpr (KTraits::kIsEvenLen) {
+    auto& vec_storage =
+        reinterpret_cast<typename KTraits::BlockStoreVecT::TempStorage&>(
+            storage);
+    typename KTraits::BlockStoreVecT(vec_storage).Store(
+        reinterpret_cast<typename KTraits::vec_t*>(output),
+        reinterpret_cast<const typename KTraits::vec_t (&)[KTraits::kNLoads]>(
+            values));
+  } else {
+    typename KTraits::BlockStoreT(storage).Store(
+        output, values, valid_items);
+  }
+}
+
+struct SSMParams {
+  int batch;
+  int dim;
+  int seqlen;
+  int dstate;
+  int n_chunks;
+
+  const float* a;
+  const float* b;
+  const float* c;
+  const float* u;
+  const float* delta;
+  const float* initial_x;
+  float* out;
+  float* final_x;
+};
+
+template <typename KTraits, bool Euler>
+__global__ __launch_bounds__(KTraits::kNThreads, KTraits::kMinBlocks)
+void SelectiveScanFwdKernel(SSMParams params) {
+  constexpr int kNThreads = KTraits::kNThreads;
+  constexpr int kNItems = KTraits::kNItems;
+  constexpr int kChunkSize = kNThreads * kNItems;
+
+  extern __shared__ char smem[];
+  auto& smem_load =
+      *reinterpret_cast<typename KTraits::BlockLoadT::TempStorage*>(smem);
+  auto& smem_load_b =
+      *reinterpret_cast<typename KTraits::BlockLoadWeightT::TempStorage*>(
+          smem);
+  auto& smem_load_c =
+      *reinterpret_cast<typename KTraits::BlockLoadWeightT::TempStorage*>(
+          smem + sizeof(typename KTraits::BlockLoadWeightT::TempStorage));
+  auto& smem_store =
+      *reinterpret_cast<typename KTraits::BlockStoreT::TempStorage*>(smem);
+  auto& smem_scan =
+      *reinterpret_cast<typename KTraits::BlockScanT::TempStorage*>(
+          smem + KTraits::kSmemIOSize);
+  auto* smem_running_prefix = reinterpret_cast<float2*>(
+      smem + KTraits::kSmemSize);
+
+  const int batch_id = blockIdx.x;
+  const int dim_id = blockIdx.y;
+  const int state_base = (batch_id * params.dim + dim_id) * params.dstate;
+  if (threadIdx.x < params.dstate) {
+    smem_running_prefix[threadIdx.x] =
+        make_float2(1.0f, params.initial_x[state_base + threadIdx.x]);
   }
   __syncthreads();
 
-  constexpr int CHUNK_SIZE = THREADS * ITEMS;
-  const int64_t chunk_count = (length + CHUNK_SIZE - 1) / CHUNK_SIZE;
-  for (int64_t chunk = 0; chunk < chunk_count; ++chunk) {
-    const int64_t chunk_start = chunk * CHUNK_SIZE;
-    float token_values[ITEMS];
-    float delta_values[ITEMS];
-    float output_values[ITEMS];
+  const float* u =
+      params.u + (batch_id * params.dim + dim_id) * params.seqlen;
+  const float* delta =
+      params.delta + (batch_id * params.dim + dim_id) * params.seqlen;
+  float* out =
+      params.out + (batch_id * params.dim + dim_id) * params.seqlen;
+
+  for (int chunk = 0; chunk < params.n_chunks; ++chunk) {
+    const int chunk_start = chunk * kChunkSize;
+    const int valid_items = params.seqlen - chunk_start;
+    float u_values[kNItems];
+    float delta_values[kNItems];
+    float output_values[kNItems];
+
+    __syncthreads();
+    LoadInput<KTraits>(
+        u + chunk_start, u_values, smem_load, valid_items);
+    __syncthreads();
+    LoadInput<KTraits>(
+        delta + chunk_start, delta_values, smem_load, valid_items);
 
 #pragma unroll
-    for (int item = 0; item < ITEMS; ++item) {
-      const int64_t time = chunk_start + threadIdx.x * ITEMS + item;
-      if (time < length) {
-        const int64_t input_offset = (batch_index * dim + channel) * length + time;
-        token_values[item] = u[input_offset];
-        delta_values[item] = deltas[input_offset];
-      } else {
-        token_values[item] = 0.0f;
-        delta_values[item] = 0.0f;
-      }
+    for (int item = 0; item < kNItems; ++item) {
       output_values[item] = 0.0f;
     }
 
-#pragma unroll
-    for (int state = 0; state < N; ++state) {
-      float2 thread_data[ITEMS];
-      const float state_a = a[channel * N + state];
-
-#pragma unroll
-      for (int item = 0; item < ITEMS; ++item) {
-        const int64_t time = chunk_start + threadIdx.x * ITEMS + item;
-        if (time < length) {
-          const int64_t bc_offset = (batch_index * N + state) * length + time;
-          const float delta_a = delta_values[item] * state_a;
-          const float a_bar = expf(delta_a);
-          const float b_bar =
-              discretization == 0
-                  ? delta_values[item] * bs[bc_offset]
-                  : expm1f(delta_a) * bs[bc_offset] / state_a;
-          thread_data[item] = make_float2(a_bar, b_bar * token_values[item]);
-        } else {
-          thread_data[item] = make_float2(1.0f, 0.0f);
-        }
-      }
+    for (int state = 0; state < params.dstate; ++state) {
+      float b_values[kNItems];
+      float c_values[kNItems];
+      const float* b = params.b +
+          (batch_id * params.dstate + state) * params.seqlen + chunk_start;
+      const float* c = params.c +
+          (batch_id * params.dstate + state) * params.seqlen + chunk_start;
 
       __syncthreads();
-      const float2 prefix = threadIdx.x % 32 == 0
-                                ? running_prefix[state]
-                                : make_float2(1.0f, 0.0f);
-      PrefixCallback prefix_callback(prefix);
-      BlockScan(scan_storage).InclusiveScan(
-          thread_data, thread_data, ComposeAffine{}, prefix_callback);
-      if (threadIdx.x == 0) {
-        running_prefix[state] = prefix_callback.running_prefix;
-      }
+      LoadWeight<KTraits>(b, b_values, smem_load_b, valid_items);
+      LoadWeight<KTraits>(c, c_values, smem_load_c, valid_items);
 
+      const float a = params.a[dim_id * params.dstate + state];
+      const float a_log2e = a * static_cast<float>(M_LOG2E);
+      float2 thread_data[kNItems];
 #pragma unroll
-      for (int item = 0; item < ITEMS; ++item) {
-        const int64_t time = chunk_start + threadIdx.x * ITEMS + item;
-        if (time < length) {
-          const int64_t bc_offset = (batch_index * N + state) * length + time;
-          output_values[item] += cs[bc_offset] * thread_data[item].y;
+      for (int item = 0; item < kNItems; ++item) {
+        const float delta_a = delta_values[item] * a;
+        const float a_bar = exp2f(delta_values[item] * a_log2e);
+        const float b_scale = Euler
+            ? delta_values[item]
+            : expm1f(delta_a) / a;
+        thread_data[item] = make_float2(
+            a_bar, b_values[item] * b_scale * u_values[item]);
+        if constexpr (!KTraits::kIsEvenLen) {
+          if (threadIdx.x * kNItems + item >= valid_items) {
+            thread_data[item] = make_float2(1.0f, 0.0f);
+          }
         }
       }
-    }
+
+      const float2 running_prefix = threadIdx.x % 32 == 0
+          ? smem_running_prefix[state]
+          : make_float2(1.0f, 0.0f);
+      SSMScanPrefixCallbackOp prefix_callback(running_prefix);
+      typename KTraits::BlockScanT(smem_scan).InclusiveScan(
+          thread_data, thread_data, SSMScanOp{}, prefix_callback);
+      if (threadIdx.x == 0) {
+        smem_running_prefix[state] = prefix_callback.running_prefix;
+        if (chunk == params.n_chunks - 1) {
+          params.final_x[state_base + state] =
+              prefix_callback.running_prefix.y;
+        }
+      }
 
 #pragma unroll
-    for (int item = 0; item < ITEMS; ++item) {
-      const int64_t time = chunk_start + threadIdx.x * ITEMS + item;
-      if (time < length) {
-        y[(batch_index * dim + channel) * length + time] = output_values[item];
+      for (int item = 0; item < kNItems; ++item) {
+        output_values[item] += c_values[item] * thread_data[item].y;
       }
     }
-  }
 
-  __syncthreads();
-  if (threadIdx.x < N) {
-    final_x[state_offset + threadIdx.x] = running_prefix[threadIdx.x].y;
+    __syncthreads();
+    StoreOutput<KTraits>(
+        out + chunk_start, output_values, smem_store, valid_items);
   }
 }
 
@@ -159,63 +317,48 @@ ffi::Error CudaError(const char* operation, cudaError_t error) {
       std::string(operation) + ": " + cudaGetErrorString(error));
 }
 
-template <int N, int THREADS, int ITEMS>
-ffi::Error LaunchSelectiveScan(
-    cudaStream_t stream,
-    const float* a,
-    const float* deltas,
-    const float* bs,
-    const float* cs,
-    const float* u,
-    const float* initial_x,
-    float* y,
-    float* final_x,
-    int64_t batch,
-    int64_t length,
-    int64_t dim,
-    int32_t discretization) {
-  const dim3 grid(batch, dim);
-  SelectiveScanKernel<N, THREADS, ITEMS><<<grid, THREADS, 0, stream>>>(
-      a, deltas, bs, cs, u, initial_x, y, final_x, length, dim,
-      discretization);
-  if (cudaError_t error = cudaPeekAtLastError(); error != cudaSuccess) {
-    return CudaError("launching chunked selective scan", error);
+template <int NThreads, int NItems, bool IsEvenLen, bool Euler>
+cudaError_t LaunchSelectiveScan(SSMParams params, cudaStream_t stream) {
+  using KTraits =
+      SelectiveScanFwdKernelTraits<NThreads, NItems, IsEvenLen>;
+  const size_t smem_size =
+      KTraits::kSmemSize + params.dstate * sizeof(float2);
+  auto kernel = &SelectiveScanFwdKernel<KTraits, Euler>;
+  if (smem_size >= 48 * 1024) {
+    const cudaError_t attribute_error = cudaFuncSetAttribute(
+        kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
+    if (attribute_error != cudaSuccess) {
+      return attribute_error;
+    }
   }
-  return ffi::Error::Success();
+  const dim3 grid(params.batch, params.dim);
+  kernel<<<grid, NThreads, smem_size, stream>>>(params);
+  return cudaPeekAtLastError();
 }
 
-template <int N>
-ffi::Error DispatchLength(
-    cudaStream_t stream,
-    const float* a,
-    const float* deltas,
-    const float* bs,
-    const float* cs,
-    const float* u,
-    const float* initial_x,
-    float* y,
-    float* final_x,
-    int64_t batch,
-    int64_t length,
-    int64_t dim,
-    int32_t discretization) {
-#define LAUNCH(THREADS, ITEMS)                                                \
-  return LaunchSelectiveScan<N, THREADS, ITEMS>(                             \
-      stream, a, deltas, bs, cs, u, initial_x, y, final_x, batch, length,   \
-      dim, discretization)
-
-  if (length <= 128) {
-    LAUNCH(32, 4);
-  } else if (length <= 256) {
-    LAUNCH(32, 8);
-  } else if (length <= 512) {
-    LAUNCH(32, 16);
-  } else if (length <= 1024) {
-    LAUNCH(64, 16);
-  } else {
-    LAUNCH(128, 16);
+template <int NThreads, int NItems, bool Euler>
+cudaError_t DispatchEvenLength(SSMParams params, cudaStream_t stream) {
+  if (params.seqlen % (NThreads * NItems) == 0) {
+    return LaunchSelectiveScan<NThreads, NItems, true, Euler>(params, stream);
   }
-#undef LAUNCH
+  return LaunchSelectiveScan<NThreads, NItems, false, Euler>(params, stream);
+}
+
+template <bool Euler>
+cudaError_t DispatchLength(SSMParams params, cudaStream_t stream) {
+  if (params.seqlen <= 128) {
+    return DispatchEvenLength<32, 4, Euler>(params, stream);
+  }
+  if (params.seqlen <= 256) {
+    return DispatchEvenLength<32, 8, Euler>(params, stream);
+  }
+  if (params.seqlen <= 512) {
+    return DispatchEvenLength<32, 16, Euler>(params, stream);
+  }
+  if (params.seqlen <= 1024) {
+    return DispatchEvenLength<64, 16, Euler>(params, stream);
+  }
+  return DispatchEvenLength<128, 16, Euler>(params, stream);
 }
 
 ffi::Error SelectiveScanImpl(
@@ -236,49 +379,75 @@ ffi::Error SelectiveScanImpl(
   }
 
   const int64_t batch = u_dims[0];
-  const int64_t dim = u_dims[1];
-  const int64_t length = u_dims[2];
-  const int64_t n = a_dims[1];
+  const int64_t length = u_dims[1];
+  const int64_t dim = u_dims[2];
+  const int64_t dstate = a_dims[1];
   if (batch <= 0 || length <= 0 || dim <= 0) {
-    return ffi::Error::InvalidArgument("selective scan dimensions must be positive");
+    return ffi::Error::InvalidArgument(
+        "selective scan dimensions must be positive");
+  }
+  if (batch > INT32_MAX || length > INT32_MAX || dim > INT32_MAX) {
+    return ffi::Error::InvalidArgument(
+        "selective scan dimensions exceed the CUDA kernel's int32 range");
+  }
+  if (dstate <= 0 || dstate > kMaxDState) {
+    return ffi::Error::InvalidArgument("N must be between 1 and 256");
   }
   if (a_dims[0] != dim) {
     return ffi::Error::InvalidArgument("A channel dimension does not match u");
   }
   if (discretization != 0 && discretization != 1) {
-    return ffi::Error::InvalidArgument("discretization must be 0 (Euler) or 1 (ZOH)");
+    return ffi::Error::InvalidArgument(
+        "discretization must be 0 (Euler) or 1 (ZOH)");
   }
 
   const int64_t expected_bld = batch * length * dim;
-  const int64_t expected_bln = batch * length * n;
-  const int64_t expected_bdn = batch * dim * n;
+  const int64_t expected_bln = batch * length * dstate;
+  const int64_t expected_bdn = batch * dim * dstate;
   if (deltas.element_count() != expected_bld ||
       bs.element_count() != expected_bln ||
       cs.element_count() != expected_bln ||
       initial_x.element_count() != expected_bdn ||
       y->element_count() != expected_bld ||
       final_x->element_count() != expected_bdn) {
-    return ffi::Error::InvalidArgument("selective scan buffer shapes do not match");
+    return ffi::Error::InvalidArgument(
+        "selective scan buffer shapes do not match");
   }
 
-#define DISPATCH_N(N_VALUE)                                                   \
-  case N_VALUE:                                                               \
-    return DispatchLength<N_VALUE>(                                           \
-        stream, a.typed_data(), deltas.typed_data(), bs.typed_data(),         \
-        cs.typed_data(), u.typed_data(), initial_x.typed_data(),              \
-        y->typed_data(), final_x->typed_data(), batch, length, dim,           \
-        discretization)
+  SSMParams params{};
+  params.batch = static_cast<int>(batch);
+  params.dim = static_cast<int>(dim);
+  params.seqlen = static_cast<int>(length);
+  params.dstate = static_cast<int>(dstate);
+  params.n_chunks = static_cast<int>((length + 2047) / 2048);
+  params.a = a.typed_data();
+  params.b = bs.typed_data();
+  params.c = cs.typed_data();
+  params.u = u.typed_data();
+  params.delta = deltas.typed_data();
+  params.initial_x = initial_x.typed_data();
+  params.out = y->typed_data();
+  params.final_x = final_x->typed_data();
 
-  switch (n) {
-    DISPATCH_N(1);
-    DISPATCH_N(2);
-    DISPATCH_N(4);
-    DISPATCH_N(8);
-    DISPATCH_N(16);
-    default:
-      return ffi::Error::InvalidArgument("N must be one of 1, 2, 4, 8, or 16");
+  // The launch dispatch uses the same sequence-length thresholds as upstream.
+  // Recompute n_chunks for the selected chunk size inside each branch.
+  cudaError_t error;
+  if (length <= 128) {
+    params.n_chunks = static_cast<int>((length + 127) / 128);
+  } else if (length <= 256) {
+    params.n_chunks = static_cast<int>((length + 255) / 256);
+  } else if (length <= 512) {
+    params.n_chunks = static_cast<int>((length + 511) / 512);
+  } else if (length <= 1024) {
+    params.n_chunks = static_cast<int>((length + 1023) / 1024);
   }
-#undef DISPATCH_N
+  error = discretization == 0
+      ? DispatchLength<true>(params, stream)
+      : DispatchLength<false>(params, stream);
+  if (error != cudaSuccess) {
+    return CudaError("launching upstream selective scan", error);
+  }
+  return ffi::Error::Success();
 }
 
 }  // namespace
@@ -290,11 +459,11 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ctx<ffi::PlatformStream<cudaStream_t>>()
         .Attr<int32_t>("discretization")
         .Arg<ffi::Buffer<ffi::F32>>()  // A: [D, N]
-        .Arg<ffi::Buffer<ffi::F32>>()  // deltas: [B, D, L]
-        .Arg<ffi::Buffer<ffi::F32>>()  // B: [B, N, L]
-        .Arg<ffi::Buffer<ffi::F32>>()  // C: [B, N, L]
-        .Arg<ffi::Buffer<ffi::F32>>()  // u: [B, D, L]
+        .Arg<ffi::Buffer<ffi::F32>>()  // deltas: logical [B, L, D]
+        .Arg<ffi::Buffer<ffi::F32>>()  // B: logical [B, L, N]
+        .Arg<ffi::Buffer<ffi::F32>>()  // C: logical [B, L, N]
+        .Arg<ffi::Buffer<ffi::F32>>()  // u: logical [B, L, D]
         .Arg<ffi::Buffer<ffi::F32>>()  // initial_x: [B, D, N]
-        .Ret<ffi::Buffer<ffi::F32>>()  // y: [B, D, L]
+        .Ret<ffi::Buffer<ffi::F32>>()  // y: logical [B, L, D]
         .Ret<ffi::Buffer<ffi::F32>>()  // final_x: [B, D, N]
 );

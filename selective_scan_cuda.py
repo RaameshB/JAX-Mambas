@@ -120,19 +120,32 @@ def _selective_scan_ffi(A, deltas, Bs, Cs, u, initial_x, use_euler_barB_approx):
     batch, length, dim = u.shape
     n = A.shape[1]
     outputs = (
-        jax.ShapeDtypeStruct((batch, dim, length), jnp.float32),
+        jax.ShapeDtypeStruct((batch, length, dim), jnp.float32),
         jax.ShapeDtypeStruct((batch, dim, n), jnp.float32),
     )
-    y, final_x = jax.ffi.ffi_call(_TARGET, outputs)(
+    call = jax.ffi.ffi_call(
+        _TARGET,
+        outputs,
+        input_layouts=(
+            (0, 1),
+            (0, 2, 1),
+            (0, 2, 1),
+            (0, 2, 1),
+            (0, 2, 1),
+            (0, 1, 2),
+        ),
+        output_layouts=((0, 2, 1), (0, 1, 2)),
+    )
+    y, final_x = call(
         A,
-        jnp.transpose(deltas, (0, 2, 1)),
-        jnp.transpose(Bs, (0, 2, 1)),
-        jnp.transpose(Cs, (0, 2, 1)),
-        jnp.transpose(u, (0, 2, 1)),
+        deltas,
+        Bs,
+        Cs,
+        u,
         initial_x,
         discretization=np.int32(0 if use_euler_barB_approx else 1),
     )
-    return jnp.transpose(y, (0, 2, 1)), final_x
+    return y, final_x
 
 
 @partial(jax.custom_vjp, nondiff_argnums=(6,))
