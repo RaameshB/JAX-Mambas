@@ -246,6 +246,7 @@ void SelectiveScanFwdKernel(SSMParams params) {
     const int valid_items = params.seqlen - chunk_start;
     float u_values[kNItems];
     float delta_values[kNItems];
+    float delta_u_values[kNItems];
     float output_values[kNItems];
 
     __syncthreads();
@@ -257,6 +258,9 @@ void SelectiveScanFwdKernel(SSMParams params) {
 
 #pragma unroll
     for (int item = 0; item < kNItems; ++item) {
+      if constexpr (Euler) {
+        delta_u_values[item] = delta_values[item] * u_values[item];
+      }
       output_values[item] = 0.0f;
     }
 
@@ -268,7 +272,6 @@ void SelectiveScanFwdKernel(SSMParams params) {
       const float* c = params.c +
           (batch_id * params.dstate + state) * params.seqlen + chunk_start;
 
-      __syncthreads();
       LoadWeight<KTraits>(b, b_values, smem_load_b, valid_items);
       LoadWeight<KTraits>(c, c_values, smem_load_c, valid_items);
 
@@ -279,11 +282,13 @@ void SelectiveScanFwdKernel(SSMParams params) {
       for (int item = 0; item < kNItems; ++item) {
         const float delta_a = delta_values[item] * a;
         const float a_bar = exp2f(delta_values[item] * a_log2e);
-        const float b_scale = Euler
-            ? delta_values[item]
-            : expm1f(delta_a) / a;
-        thread_data[item] = make_float2(
-            a_bar, b_values[item] * b_scale * u_values[item]);
+        float b_u;
+        if constexpr (Euler) {
+          b_u = b_values[item] * delta_u_values[item];
+        } else {
+          b_u = b_values[item] * (expm1f(delta_a) / a) * u_values[item];
+        }
+        thread_data[item] = make_float2(a_bar, b_u);
         if constexpr (!KTraits::kIsEvenLen) {
           if (threadIdx.x * kNItems + item >= valid_items) {
             thread_data[item] = make_float2(1.0f, 0.0f);
@@ -366,17 +371,18 @@ cudaError_t DispatchLength(SSMParams params, cudaStream_t stream) {
   return DispatchEvenLength<128, 16, Euler>(params, stream);
 }
 
-ffi::Error SelectiveScanImpl(
+ffi::Error SelectiveScanImplWithRepeats(
     cudaStream_t stream,
     int32_t discretization,
-    ffi::Buffer<ffi::F32> a,
-    ffi::Buffer<ffi::F32> deltas,
-    ffi::Buffer<ffi::F32> bs,
-    ffi::Buffer<ffi::F32> cs,
-    ffi::Buffer<ffi::F32> u,
-    ffi::Buffer<ffi::F32> initial_x,
-    ffi::ResultBuffer<ffi::F32> y,
-    ffi::ResultBuffer<ffi::F32> final_x) {
+    int32_t repeats,
+    const ffi::Buffer<ffi::F32>& a,
+    const ffi::Buffer<ffi::F32>& deltas,
+    const ffi::Buffer<ffi::F32>& bs,
+    const ffi::Buffer<ffi::F32>& cs,
+    const ffi::Buffer<ffi::F32>& u,
+    const ffi::Buffer<ffi::F32>& initial_x,
+    ffi::ResultBuffer<ffi::F32>& y,
+    ffi::ResultBuffer<ffi::F32>& final_x) {
   const auto a_dims = a.dimensions();
   const auto u_dims = u.dimensions();
   if (a_dims.size() != 2 || u_dims.size() != 3) {
@@ -404,6 +410,9 @@ ffi::Error SelectiveScanImpl(
   if (discretization != 0 && discretization != 1) {
     return ffi::Error::InvalidArgument(
         "discretization must be 0 (Euler) or 1 (ZOH)");
+  }
+  if (repeats <= 0) {
+    return ffi::Error::InvalidArgument("repeats must be positive");
   }
 
   const int64_t expected_bld = batch * length * dim;
@@ -446,13 +455,56 @@ ffi::Error SelectiveScanImpl(
   } else if (length <= 1024) {
     params.n_chunks = static_cast<int>((length + 1023) / 1024);
   }
-  error = discretization == 0
-      ? DispatchLength<true>(params, stream)
-      : DispatchLength<false>(params, stream);
-  if (error != cudaSuccess) {
-    return CudaError("launching upstream selective scan", error);
+  for (int repeat = 0; repeat < repeats; ++repeat) {
+    error = discretization == 0
+        ? DispatchLength<true>(params, stream)
+        : DispatchLength<false>(params, stream);
+    if (error != cudaSuccess) {
+      return CudaError("launching upstream selective scan", error);
+    }
   }
   return ffi::Error::Success();
+}
+
+ffi::Error SelectiveScanImpl(
+    cudaStream_t stream,
+    int32_t discretization,
+    ffi::Buffer<ffi::F32> a,
+    ffi::Buffer<ffi::F32> deltas,
+    ffi::Buffer<ffi::F32> bs,
+    ffi::Buffer<ffi::F32> cs,
+    ffi::Buffer<ffi::F32> u,
+    ffi::Buffer<ffi::F32> initial_x,
+    ffi::ResultBuffer<ffi::F32> y,
+    ffi::ResultBuffer<ffi::F32> final_x) {
+  return SelectiveScanImplWithRepeats(
+      stream, discretization, 1, a, deltas, bs, cs, u, initial_x, y, final_x);
+}
+
+ffi::Error SelectiveScanBenchmarkImpl(
+    cudaStream_t stream,
+    int32_t discretization,
+    int32_t repeats,
+    ffi::Buffer<ffi::F32> a,
+    ffi::Buffer<ffi::F32> deltas,
+    ffi::Buffer<ffi::F32> bs,
+    ffi::Buffer<ffi::F32> cs,
+    ffi::Buffer<ffi::F32> u,
+    ffi::Buffer<ffi::F32> initial_x,
+    ffi::ResultBuffer<ffi::F32> y,
+    ffi::ResultBuffer<ffi::F32> final_x) {
+  return SelectiveScanImplWithRepeats(
+      stream,
+      discretization,
+      repeats,
+      a,
+      deltas,
+      bs,
+      cs,
+      u,
+      initial_x,
+      y,
+      final_x);
 }
 
 }  // namespace
@@ -471,4 +523,24 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<ffi::Buffer<ffi::F32>>()  // initial_x: [B, D, N]
         .Ret<ffi::Buffer<ffi::F32>>()  // y: logical [B, L, D]
         .Ret<ffi::Buffer<ffi::F32>>()  // final_x: [B, D, N]
+);
+
+// Internal microbenchmark entry point. It amortizes one JAX dispatch over
+// repeated launches of the same kernel and is intentionally not part of the
+// public Python selective-scan API.
+XLA_FFI_DEFINE_HANDLER_SYMBOL(
+    MambaSelectiveScanBenchmark,
+    SelectiveScanBenchmarkImpl,
+    ffi::Ffi::Bind()
+        .Ctx<ffi::PlatformStream<cudaStream_t>>()
+        .Attr<int32_t>("discretization")
+        .Attr<int32_t>("repeats")
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Arg<ffi::Buffer<ffi::F32>>()
+        .Ret<ffi::Buffer<ffi::F32>>()
+        .Ret<ffi::Buffer<ffi::F32>>()
 );
