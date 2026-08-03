@@ -14,7 +14,7 @@ def _mamba_kernel_chunk_size(seq_len):
 
 
 def blelloch_scan(A_seq, h_seq):
-    """Work-efficient 2D (Blelloch) inclusive scan over time axis (axis 0).
+    """Work-efficient 2D inclusive scan over time axis (axis 0).
     
     A_seq: (block_len, N)
     h_seq: (block_len, N)
@@ -24,52 +24,7 @@ def blelloch_scan(A_seq, h_seq):
         A_l, h_l = later
         return A_l * A_e, A_l * h_e + h_l
 
-    def deinterleave(v):
-        T, N = v.shape
-        pair = v.reshape(T // 2, 2, N)
-        return pair[:, 0, :], pair[:, 1, :]
-
-    def interleave(a, b):
-        T_half, N = a.shape
-        idx = jnp.arange(2)[None, :, None]
-        pair = jnp.where(idx == 0, a[:, None, :], b[:, None, :])
-        return pair.reshape(T_half * 2, N)
-
-    def _scan(A_e, h_e):
-        T = A_e.shape[0]
-        if T == 1:
-            return A_e, h_e
-        if T == 2:
-            A0, A1 = A_e[:1], A_e[1:]
-            h0, h1 = h_e[:1], h_e[1:]
-            odd_A, odd_h = combine((A0, h0), (A1, h1))
-            return interleave(A0, odd_A), interleave(h0, odd_h)
-
-        A0, A1 = deinterleave(A_e)
-        h0, h1 = deinterleave(h_e)
-        odd_A, odd_h = _scan(*combine((A0, h0), (A1, h1)))
-        even_rest_A, even_rest_h = combine((odd_A[:-1], odd_h[:-1]), (A0[1:], h0[1:]))
-
-        first_two_A = interleave(A0[:1], odd_A[:1])
-        first_two_h = interleave(h0[:1], odd_h[:1])
-
-        rest_A = interleave(even_rest_A, odd_A[1:])
-        rest_h = interleave(even_rest_h, odd_h[1:])
-
-        t_idx = jnp.arange(T)[:, None]
-        first_mask = (t_idx < 2)
-
-        first_padded_A = jnp.pad(first_two_A, ((0, T - 2), (0, 0)))
-        first_padded_h = jnp.pad(first_two_h, ((0, T - 2), (0, 0)))
-
-        rest_padded_A = jnp.pad(rest_A, ((2, 0), (0, 0)))
-        rest_padded_h = jnp.pad(rest_h, ((2, 0), (0, 0)))
-
-        out_A = jnp.where(first_mask, first_padded_A, rest_padded_A)
-        out_h = jnp.where(first_mask, first_padded_h, rest_padded_h)
-        return out_A, out_h
-
-    return _scan(A_seq, h_seq)
+    return jax.lax.associative_scan(combine, (A_seq, h_seq), axis=0)
 
 
 def apply_reference_ssm(A, Deltas, Bs, Cs, u, N=16, use_euler_barB_approx=True, initial_x=None):
