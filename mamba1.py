@@ -92,11 +92,14 @@ class S6(nnx.Module):
         return At * At_prev, At * ht_prev + ht
 
     @nnx.jit
-    def __call__(self, x):
+    def __call__(self, x, padding_mask=None):
         A = -jnp.exp(self.A.real) + (self.A.imag * 1j if self.complex_ssm else 0) if self.log_A else self.A
         Bs = self.s_B(x)
         Cs = self.s_C(x)
         Deltas = self.tau_Delta(self.biased_s_Delta(x))
+
+        if padding_mask:
+            Deltas *= jnp.inf * (padding_mask - 1)
 
         if self.complex_ssm:
             A_bars, B_bars = self.discretize(A, Bs, Deltas)
@@ -185,7 +188,7 @@ class Mamba(nnx.Module):
         self.has_cache = True
 
     # @nnx.jit
-    def __call__(self, x):
+    def __call__(self, x, padding_mask=None):
         res = x
 
         if self.has_norm:
@@ -193,6 +196,9 @@ class Mamba(nnx.Module):
 
         projed = self.main_proj_up(x)
         skip = self.sigma(self.skip_proj_up(x))
+
+        if padding_mask:
+            projed *= padding_mask
 
         kernel_size = self.conv.kernel.shape[0]
         if self.has_cache:
@@ -205,7 +211,7 @@ class Mamba(nnx.Module):
             )
 
         conved = self.sigma(self.conv(projed))
-        ssm_out = self.s6(conved)
+        ssm_out = self.s6(conved, padding_mask)
         muled = ssm_out * skip
         logits = self.proj_down(muled)
 
