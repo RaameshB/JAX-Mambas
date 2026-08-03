@@ -68,17 +68,28 @@ at parity with `lax.associative_scan` for lengths 512 and 2048, and 2.0x faster
 at length 8192. Run `python benchmark_selective_scan.py` to benchmark locally.
 
 Against Mamba v2.3.2's official float32 forward kernel on an A100-SXM4-40GB
-(`B=1, D=256, N=16`), this experimental kernel is currently slower:
+(`B=1, D=256, N=16`), end-to-end framework call latency is:
 
-| Length | This kernel (median) | Official Mamba (median) | Official speedup |
+| Length | JAX FFI (median) | Official Mamba (median) |
+| ---: | ---: | ---: |
+| 512 | 0.172 ms | 0.045 ms |
+| 2048 | 0.223 ms | 0.072 ms |
+| 8192 | 0.412 ms | 0.210 ms |
+
+That comparison includes JAX dispatch, synchronization, output allocation, and
+layout handling. To isolate the CUDA work, the benchmark also launches each
+kernel 100 times behind one framework call and divides the elapsed time by 100:
+
+| Length | This kernel (median) | Official Mamba (median) | Difference |
 | ---: | ---: | ---: | ---: |
-| 512 | 0.403 ms | 0.041 ms | 9.8x |
-| 2048 | 0.702 ms | 0.063 ms | 11.2x |
-| 8192 | 1.037 ms | 0.183 ms | 5.7x |
+| 512 | 0.0282 ms | 0.0262 ms | 7.6% slower |
+| 2048 | 0.0560 ms | 0.0510 ms | 9.8% slower |
+| 8192 | 0.1584 ms | 0.1502 ms | 5.5% slower |
 
-Both paths used float32 Euler discretization and zero initial state. Maximum
-observed output/state error was `1.2e-7`. These are end-to-end framework call
-timings (JAX FFI versus PyTorch extension), not isolated CUDA-event timings.
+Both paths used float32 Euler discretization and zero initial state. All 11 GPU
+correctness and gradient tests passed, and the benchmark outputs were bitwise
+identical. The isolated result shows that most of the apparent end-to-end gap
+is outside the CUDA kernel itself.
 
 ## License
 
