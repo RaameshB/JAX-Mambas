@@ -132,12 +132,13 @@ def train_step(rngs, graphdef, params, opt_state):
     params = optax.apply_updates(params, updates)
     return params, opt_state, loss
 # %%
-with Progress as progress:
+with Progress() as progress:
     task = progress.add_task('Training...', total=TRAIN_STEPS)
     for step in range(TRAIN_STEPS):
         params, opt_state, loss = train_step(rngs, graphdef, params, opt_state)
         progress.advance(task)
 print(f'Final Loss: {loss}')
+
 # %%
 model = nnx.merge(graphdef, params)
 # %%
