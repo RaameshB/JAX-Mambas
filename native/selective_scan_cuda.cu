@@ -389,9 +389,12 @@ ffi::Error SelectiveScanImplWithRepeats(
     return ffi::Error::InvalidArgument("A must have rank 2 and u rank 3");
   }
 
+  // XLA FFI exposes dimensions in physical layout order. The Python binding
+  // requests (B, D, L) storage for logical (B, L, D) inputs so the upstream
+  // CUDA kernel can consume them without explicit transposes.
   const int64_t batch = u_dims[0];
-  const int64_t length = u_dims[1];
-  const int64_t dim = u_dims[2];
+  const int64_t dim = u_dims[1];
+  const int64_t length = u_dims[2];
   const int64_t dstate = a_dims[1];
   if (batch <= 0 || length <= 0 || dim <= 0) {
     return ffi::Error::InvalidArgument(
