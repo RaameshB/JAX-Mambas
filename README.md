@@ -66,6 +66,14 @@ states and the returned final state. ZOH-mode reverse differentiation falls
 back to the JAX reference because the original Mamba backward kernel implements
 the Euler approximation only.
 
+In a steady-state Colab G4 benchmark shaped like the induction-heads notebook
+(`B=8`, `L=256`, `D=64`, two Mamba layers, `expand=2`, `N=16`, `R=16`), the
+fully JIT-compiled loss-and-gradient call took 1.132 ms with the CUDA forward
+and backward kernels versus 1.600 ms with the JIT-compiled JAX reference scan.
+That is 1.42x the throughput (42% more loss/gradient evaluations per second),
+or 29% lower latency. Compilation and optimizer updates were excluded from the
+timed region; both paths used the same parameters and batch.
+
 On a Colab L4 at `B=1, D=256, N=16`, the CUDA forward path was approximately
 at parity with `lax.associative_scan` for lengths 512 and 2048, and 2.0x faster
 at length 8192. Run `python benchmark_selective_scan.py` to benchmark locally.
