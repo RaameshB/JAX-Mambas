@@ -98,7 +98,7 @@ class S6(nnx.Module):
         Cs = self.s_C(x)
         Deltas = self.tau_Delta(self.biased_s_Delta(x))
 
-        if padding_mask:
+        if padding_mask is not None:
             Deltas *= jnp.inf * (padding_mask - 1)
 
         if self.complex_ssm:
@@ -197,7 +197,7 @@ class Mamba(nnx.Module):
         projed = self.main_proj_up(x)
         skip = self.sigma(self.skip_proj_up(x))
 
-        if padding_mask:
+        if padding_mask is not None:
             projed *= padding_mask
 
         kernel_size = self.conv.kernel.shape[0]
