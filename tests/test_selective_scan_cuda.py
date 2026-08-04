@@ -76,11 +76,33 @@ def test_cuda_matches_reference(length, use_euler):
     not any(device.platform == "gpu" for device in jax.devices()),
     reason="CUDA test requires a GPU",
 )
-def test_cuda_vjp_matches_reference():
-    args = inputs(batch=1, length=31, dim=4, n=8)
+@pytest.mark.parametrize("length", [1, 31, 513, 2051])
+def test_cuda_vjp_matches_reference(length):
+    args = inputs(batch=1, length=length, dim=4, n=8)
 
     def loss(use_cuda, *values):
         y, final_x = selective_scan(*values, use_cuda=use_cuda)
+        return jnp.mean(y**2) + jnp.mean(final_x**2)
+
+    expected = jax.grad(partial(loss, False), argnums=range(6))(*args)
+    actual = jax.jit(jax.grad(partial(loss, True), argnums=range(6)))(*args)
+    for expected_value, actual_value in zip(expected, actual):
+        np.testing.assert_allclose(
+            actual_value, expected_value, rtol=1e-3, atol=1e-3
+        )
+
+
+@pytest.mark.skipif(
+    not any(device.platform == "gpu" for device in jax.devices()),
+    reason="CUDA test requires a GPU",
+)
+def test_zoh_cuda_vjp_matches_reference():
+    args = inputs(batch=1, length=31, dim=4, n=8)
+
+    def loss(use_cuda, *values):
+        y, final_x = selective_scan(
+            *values, use_euler_barB_approx=False, use_cuda=use_cuda
+        )
         return jnp.mean(y**2) + jnp.mean(final_x**2)
 
     expected = jax.grad(partial(loss, False), argnums=range(6))(*args)

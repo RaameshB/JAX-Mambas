@@ -10,6 +10,7 @@ import numpy as np
 
 
 _TARGET = "mamba_selective_scan_cuda"
+_BACKWARD_TARGET = "mamba_selective_scan_cuda_backward"
 _LIBRARY = None
 _REGISTERED = False
 
@@ -41,6 +42,11 @@ def register_cuda_kernel(library_path: str | Path | None = None):
     jax.ffi.register_ffi_target(
         _TARGET,
         jax.ffi.pycapsule(_LIBRARY.MambaSelectiveScan),
+        platform="CUDA",
+    )
+    jax.ffi.register_ffi_target(
+        _BACKWARD_TARGET,
+        jax.ffi.pycapsule(_LIBRARY.MambaSelectiveScanBackward),
         platform="CUDA",
     )
     _REGISTERED = True
@@ -119,9 +125,11 @@ def _selective_scan_ffi(A, deltas, Bs, Cs, u, initial_x, use_euler_barB_approx):
     _validate_inputs(A, deltas, Bs, Cs, u, initial_x)
     batch, length, dim = u.shape
     n = A.shape[1]
+    n_chunks = (length + 2047) // 2048
     outputs = (
         jax.ShapeDtypeStruct((batch, length, dim), jnp.float32),
         jax.ShapeDtypeStruct((batch, dim, n), jnp.float32),
+        jax.ShapeDtypeStruct((batch, dim, n_chunks, n, 2), jnp.float32),
     )
     call = jax.ffi.ffi_call(
         _TARGET,
@@ -134,9 +142,9 @@ def _selective_scan_ffi(A, deltas, Bs, Cs, u, initial_x, use_euler_barB_approx):
             (0, 2, 1),
             (0, 1, 2),
         ),
-        output_layouts=((0, 2, 1), (0, 1, 2)),
+        output_layouts=((0, 2, 1), (0, 1, 2), (0, 1, 2, 3, 4)),
     )
-    y, final_x = call(
+    return call(
         A,
         deltas,
         Bs,
@@ -149,32 +157,101 @@ def _selective_scan_ffi(A, deltas, Bs, Cs, u, initial_x, use_euler_barB_approx):
         dim=np.int32(dim),
         dstate=np.int32(n),
     )
-    return y, final_x
+
+
+def _selective_scan_bwd_ffi(
+    A, deltas, Bs, Cs, u, initial_x, chunk_states, dout, dfinal_x
+):
+    register_cuda_kernel()
+    _validate_inputs(A, deltas, Bs, Cs, u, initial_x)
+    batch, length, dim = u.shape
+    n = A.shape[1]
+    call = jax.ffi.ffi_call(
+        _BACKWARD_TARGET,
+        (
+            jax.ShapeDtypeStruct(A.shape, jnp.float32),
+            jax.ShapeDtypeStruct(deltas.shape, jnp.float32),
+            jax.ShapeDtypeStruct(Bs.shape, jnp.float32),
+            jax.ShapeDtypeStruct(Cs.shape, jnp.float32),
+            jax.ShapeDtypeStruct(u.shape, jnp.float32),
+            jax.ShapeDtypeStruct(initial_x.shape, jnp.float32),
+        ),
+        input_layouts=(
+            (0, 1),
+            (0, 2, 1),
+            (0, 2, 1),
+            (0, 2, 1),
+            (0, 2, 1),
+            (0, 1, 2),
+            (0, 1, 2, 3, 4),
+            (0, 2, 1),
+            (0, 1, 2),
+        ),
+        output_layouts=(
+            (0, 1),
+            (0, 2, 1),
+            (0, 2, 1),
+            (0, 2, 1),
+            (0, 2, 1),
+            (0, 1, 2),
+        ),
+    )
+    return call(
+        A,
+        deltas,
+        Bs,
+        Cs,
+        u,
+        initial_x,
+        chunk_states,
+        dout,
+        dfinal_x,
+        batch=np.int32(batch),
+        length=np.int32(length),
+        dim=np.int32(dim),
+        dstate=np.int32(n),
+    )
 
 
 @partial(jax.custom_vjp, nondiff_argnums=(6,))
 def _selective_scan_cuda(A, deltas, Bs, Cs, u, initial_x, use_euler_barB_approx):
-    return _selective_scan_ffi(
+    y, final_x, _ = _selective_scan_ffi(
         A, deltas, Bs, Cs, u, initial_x, use_euler_barB_approx
     )
+    return y, final_x
 
 
 def _selective_scan_cuda_fwd(
     A, deltas, Bs, Cs, u, initial_x, use_euler_barB_approx
 ):
-    outputs = _selective_scan_ffi(
+    y, final_x, chunk_states = _selective_scan_ffi(
         A, deltas, Bs, Cs, u, initial_x, use_euler_barB_approx
     )
-    return outputs, (A, deltas, Bs, Cs, u, initial_x)
+    return (y, final_x), (A, deltas, Bs, Cs, u, initial_x, chunk_states)
 
 
 def _selective_scan_cuda_bwd(use_euler_barB_approx, residuals, cotangents):
+    A, deltas, Bs, Cs, u, initial_x, chunk_states = residuals
+    if use_euler_barB_approx:
+        dout, dfinal_x = cotangents
+        return _selective_scan_bwd_ffi(
+            A,
+            deltas,
+            Bs,
+            Cs,
+            u,
+            initial_x,
+            chunk_states,
+            dout,
+            dfinal_x,
+        )
+
     def reference(*args):
         return selective_scan_reference(
             *args, use_euler_barB_approx=use_euler_barB_approx
         )
 
-    _, pullback = jax.vjp(reference, *residuals)
+    _, pullback = jax.vjp(reference, A, deltas, Bs, Cs, u, initial_x)
     return pullback(cotangents)
 
 
