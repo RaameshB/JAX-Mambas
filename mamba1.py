@@ -99,7 +99,7 @@ class S6(nnx.Module):
         Deltas = self.tau_Delta(self.biased_s_Delta(x))
 
         if padding_mask is not None:
-            Deltas *= jnp.inf * padding_mask
+            Deltas *= padding_mask
 
         if self.complex_ssm:
             A_bars, B_bars = self.discretize(A, Bs, Deltas)
