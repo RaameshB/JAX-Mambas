@@ -21,7 +21,7 @@ print(jax.devices())
 # %%
 LR = 1e-3
 BSZ = 8
-TRAIN_STEPS = 204800//10
+TRAIN_STEPS = 204800
 
 
 # %%
