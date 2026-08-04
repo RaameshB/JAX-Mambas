@@ -7,6 +7,7 @@ on:
       - "cuda-selective-scan"
       - "cuda-selective-scan-backward"
     paths:
+      - ".github/workflows/cuda-fatbin.yml"
       - "native/**"
       - "selective_scan_cuda.py"
     tags:
