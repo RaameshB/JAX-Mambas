@@ -375,6 +375,10 @@ ffi::Error SelectiveScanImplWithRepeats(
     cudaStream_t stream,
     int32_t discretization,
     int32_t repeats,
+    int32_t batch,
+    int32_t length,
+    int32_t dim,
+    int32_t dstate,
     const ffi::Buffer<ffi::F32>& a,
     const ffi::Buffer<ffi::F32>& deltas,
     const ffi::Buffer<ffi::F32>& bs,
@@ -389,23 +393,12 @@ ffi::Error SelectiveScanImplWithRepeats(
     return ffi::Error::InvalidArgument("A must have rank 2 and u rank 3");
   }
 
-  const int64_t batch = u_dims[0];
-  const int64_t length = u_dims[1];
-  const int64_t dim = u_dims[2];
-  const int64_t dstate = a_dims[1];
   if (batch <= 0 || length <= 0 || dim <= 0) {
     return ffi::Error::InvalidArgument(
         "selective scan dimensions must be positive");
   }
-  if (batch > INT32_MAX || length > INT32_MAX || dim > INT32_MAX) {
-    return ffi::Error::InvalidArgument(
-        "selective scan dimensions exceed the CUDA kernel's int32 range");
-  }
   if (dstate <= 0 || dstate > kMaxDState) {
     return ffi::Error::InvalidArgument("N must be between 1 and 256");
-  }
-  if (a_dims[0] != dim) {
-    return ffi::Error::InvalidArgument("A channel dimension does not match u");
   }
   if (discretization != 0 && discretization != 1) {
     return ffi::Error::InvalidArgument(
@@ -415,12 +408,15 @@ ffi::Error SelectiveScanImplWithRepeats(
     return ffi::Error::InvalidArgument("repeats must be positive");
   }
 
-  const int64_t expected_bld = batch * length * dim;
-  const int64_t expected_bln = batch * length * dstate;
-  const int64_t expected_bdn = batch * dim * dstate;
-  if (deltas.element_count() != expected_bld ||
+  const int64_t expected_a = static_cast<int64_t>(dim) * dstate;
+  const int64_t expected_bld = static_cast<int64_t>(batch) * length * dim;
+  const int64_t expected_bln = static_cast<int64_t>(batch) * length * dstate;
+  const int64_t expected_bdn = static_cast<int64_t>(batch) * dim * dstate;
+  if (a.element_count() != expected_a ||
+      deltas.element_count() != expected_bld ||
       bs.element_count() != expected_bln ||
       cs.element_count() != expected_bln ||
+      u.element_count() != expected_bld ||
       initial_x.element_count() != expected_bdn ||
       y->element_count() != expected_bld ||
       final_x->element_count() != expected_bdn) {
@@ -469,6 +465,10 @@ ffi::Error SelectiveScanImplWithRepeats(
 ffi::Error SelectiveScanImpl(
     cudaStream_t stream,
     int32_t discretization,
+    int32_t batch,
+    int32_t length,
+    int32_t dim,
+    int32_t dstate,
     ffi::Buffer<ffi::F32> a,
     ffi::Buffer<ffi::F32> deltas,
     ffi::Buffer<ffi::F32> bs,
@@ -478,13 +478,31 @@ ffi::Error SelectiveScanImpl(
     ffi::ResultBuffer<ffi::F32> y,
     ffi::ResultBuffer<ffi::F32> final_x) {
   return SelectiveScanImplWithRepeats(
-      stream, discretization, 1, a, deltas, bs, cs, u, initial_x, y, final_x);
+      stream,
+      discretization,
+      1,
+      batch,
+      length,
+      dim,
+      dstate,
+      a,
+      deltas,
+      bs,
+      cs,
+      u,
+      initial_x,
+      y,
+      final_x);
 }
 
 ffi::Error SelectiveScanBenchmarkImpl(
     cudaStream_t stream,
     int32_t discretization,
     int32_t repeats,
+    int32_t batch,
+    int32_t length,
+    int32_t dim,
+    int32_t dstate,
     ffi::Buffer<ffi::F32> a,
     ffi::Buffer<ffi::F32> deltas,
     ffi::Buffer<ffi::F32> bs,
@@ -497,6 +515,10 @@ ffi::Error SelectiveScanBenchmarkImpl(
       stream,
       discretization,
       repeats,
+      batch,
+      length,
+      dim,
+      dstate,
       a,
       deltas,
       bs,
@@ -515,6 +537,10 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
     ffi::Ffi::Bind()
         .Ctx<ffi::PlatformStream<cudaStream_t>>()
         .Attr<int32_t>("discretization")
+        .Attr<int32_t>("batch")
+        .Attr<int32_t>("length")
+        .Attr<int32_t>("dim")
+        .Attr<int32_t>("dstate")
         .Arg<ffi::Buffer<ffi::F32>>()  // A: [D, N]
         .Arg<ffi::Buffer<ffi::F32>>()  // deltas: logical [B, L, D]
         .Arg<ffi::Buffer<ffi::F32>>()  // B: logical [B, L, N]
@@ -535,6 +561,10 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Ctx<ffi::PlatformStream<cudaStream_t>>()
         .Attr<int32_t>("discretization")
         .Attr<int32_t>("repeats")
+        .Attr<int32_t>("batch")
+        .Attr<int32_t>("length")
+        .Attr<int32_t>("dim")
+        .Attr<int32_t>("dstate")
         .Arg<ffi::Buffer<ffi::F32>>()
         .Arg<ffi::Buffer<ffi::F32>>()
         .Arg<ffi::Buffer<ffi::F32>>()
