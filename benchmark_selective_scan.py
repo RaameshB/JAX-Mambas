@@ -70,6 +70,10 @@ def repeated_cuda_scan(*args, launches):
         initial_x,
         discretization=np.int32(0),
         repeats=np.int32(launches),
+        batch=np.int32(batch),
+        length=np.int32(length),
+        dim=np.int32(dim),
+        dstate=np.int32(n),
     )
 
 

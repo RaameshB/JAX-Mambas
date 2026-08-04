@@ -144,6 +144,10 @@ def _selective_scan_ffi(A, deltas, Bs, Cs, u, initial_x, use_euler_barB_approx):
         u,
         initial_x,
         discretization=np.int32(0 if use_euler_barB_approx else 1),
+        batch=np.int32(batch),
+        length=np.int32(length),
+        dim=np.int32(dim),
+        dstate=np.int32(n),
     )
     return y, final_x
 
