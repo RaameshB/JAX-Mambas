@@ -5,6 +5,10 @@ on:
   push:
     branches:
       - "cuda-selective-scan"
+    paths:
+      - "native/CMakeLists.txt"
+      - "native/*.cu"
+      - "selective_scan_cuda.py"
     tags:
       - "cuda-v*"
 
