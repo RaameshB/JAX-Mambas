@@ -55,7 +55,7 @@ class S6(nnx.Module):
             self.biased_s_Delta = lambda x: self.delta_bias + self.Linear_1(x)
         elif R>1:
             self.Linear_R = nnx.Linear(in_features=D, out_features=R, use_bias=False, rngs=rngs, dtype=real_dtype)
-            self.Linear_Delta = nnx.Linear(in_features=R, out_features=D, use_bias=False, rngs=rngs, bias_init=s_Delta_bias_initializer, dtype=real_dtype)
+            self.Linear_Delta = nnx.Linear(in_features=R, out_features=D, use_bias=True, rngs=rngs, bias_init=s_Delta_bias_initializer, dtype=real_dtype)
             self.biased_s_Delta = lambda x: self.Linear_Delta(self.Linear_R(x))
         else:
             raise ValueError("R must be 1 or greater.")
