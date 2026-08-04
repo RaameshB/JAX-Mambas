@@ -25,7 +25,12 @@ execute_process(
   COMMAND_ERROR_IS_FATAL ANY
 )
 
-add_library(mamba_selective_scan SHARED selective_scan_cuda.cu)
+add_library(
+  mamba_selective_scan
+  SHARED
+    selective_scan_cuda.cu
+    selective_scan_bwd.cu
+)
 target_include_directories(mamba_selective_scan PRIVATE "${XLA_INCLUDE_DIR}")
 target_link_libraries(mamba_selective_scan PRIVATE CUDA::cudart)
 target_compile_features(mamba_selective_scan PRIVATE cxx_std_17)

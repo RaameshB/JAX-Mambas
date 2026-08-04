@@ -199,6 +199,7 @@ struct SSMParams {
   const float* initial_x;
   float* out;
   float* final_x;
+  float* chunk_states;
 };
 
 template <typename KTraits, bool Euler>
@@ -304,6 +305,14 @@ void SelectiveScanFwdKernel(SSMParams params) {
           thread_data, thread_data, SSMScanOp{}, prefix_callback);
       if (threadIdx.x == 0) {
         smem_running_prefix[state] = prefix_callback.running_prefix;
+        const int chunk_state_offset =
+            ((((batch_id * params.dim + dim_id) * params.n_chunks + chunk)
+               * params.dstate + state)
+             * 2);
+        params.chunk_states[chunk_state_offset] =
+            prefix_callback.running_prefix.x;
+        params.chunk_states[chunk_state_offset + 1] =
+            prefix_callback.running_prefix.y;
         if (chunk == params.n_chunks - 1) {
           params.final_x[state_base + state] =
               prefix_callback.running_prefix.y;
@@ -386,7 +395,8 @@ ffi::Error SelectiveScanImplWithRepeats(
     const ffi::Buffer<ffi::F32>& u,
     const ffi::Buffer<ffi::F32>& initial_x,
     ffi::ResultBuffer<ffi::F32>& y,
-    ffi::ResultBuffer<ffi::F32>& final_x) {
+    ffi::ResultBuffer<ffi::F32>& final_x,
+    ffi::ResultBuffer<ffi::F32>& chunk_states) {
   const auto a_dims = a.dimensions();
   const auto u_dims = u.dimensions();
   if (a_dims.size() != 2 || u_dims.size() != 3) {
@@ -412,6 +422,10 @@ ffi::Error SelectiveScanImplWithRepeats(
   const int64_t expected_bld = static_cast<int64_t>(batch) * length * dim;
   const int64_t expected_bln = static_cast<int64_t>(batch) * length * dstate;
   const int64_t expected_bdn = static_cast<int64_t>(batch) * dim * dstate;
+  const int64_t expected_chunk_states =
+      static_cast<int64_t>(batch) * dim
+      * ((static_cast<int64_t>(length) + 2047) / 2048)
+      * dstate * 2;
   if (a.element_count() != expected_a ||
       deltas.element_count() != expected_bld ||
       bs.element_count() != expected_bln ||
@@ -419,7 +433,8 @@ ffi::Error SelectiveScanImplWithRepeats(
       u.element_count() != expected_bld ||
       initial_x.element_count() != expected_bdn ||
       y->element_count() != expected_bld ||
-      final_x->element_count() != expected_bdn) {
+      final_x->element_count() != expected_bdn ||
+      chunk_states->element_count() != expected_chunk_states) {
     return ffi::Error::InvalidArgument(
         "selective scan buffer shapes do not match");
   }
@@ -438,6 +453,7 @@ ffi::Error SelectiveScanImplWithRepeats(
   params.initial_x = initial_x.typed_data();
   params.out = y->typed_data();
   params.final_x = final_x->typed_data();
+  params.chunk_states = chunk_states->typed_data();
 
   // The launch dispatch uses the same sequence-length thresholds as upstream.
   // Recompute n_chunks for the selected chunk size inside each branch.
@@ -476,7 +492,8 @@ ffi::Error SelectiveScanImpl(
     ffi::Buffer<ffi::F32> u,
     ffi::Buffer<ffi::F32> initial_x,
     ffi::ResultBuffer<ffi::F32> y,
-    ffi::ResultBuffer<ffi::F32> final_x) {
+    ffi::ResultBuffer<ffi::F32> final_x,
+    ffi::ResultBuffer<ffi::F32> chunk_states) {
   return SelectiveScanImplWithRepeats(
       stream,
       discretization,
@@ -492,7 +509,8 @@ ffi::Error SelectiveScanImpl(
       u,
       initial_x,
       y,
-      final_x);
+      final_x,
+      chunk_states);
 }
 
 ffi::Error SelectiveScanBenchmarkImpl(
@@ -510,7 +528,8 @@ ffi::Error SelectiveScanBenchmarkImpl(
     ffi::Buffer<ffi::F32> u,
     ffi::Buffer<ffi::F32> initial_x,
     ffi::ResultBuffer<ffi::F32> y,
-    ffi::ResultBuffer<ffi::F32> final_x) {
+    ffi::ResultBuffer<ffi::F32> final_x,
+    ffi::ResultBuffer<ffi::F32> chunk_states) {
   return SelectiveScanImplWithRepeats(
       stream,
       discretization,
@@ -526,7 +545,8 @@ ffi::Error SelectiveScanBenchmarkImpl(
       u,
       initial_x,
       y,
-      final_x);
+      final_x,
+      chunk_states);
 }
 
 }  // namespace
@@ -549,6 +569,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<ffi::Buffer<ffi::F32>>()  // initial_x: [B, D, N]
         .Ret<ffi::Buffer<ffi::F32>>()  // y: logical [B, L, D]
         .Ret<ffi::Buffer<ffi::F32>>()  // final_x: [B, D, N]
+        .Ret<ffi::Buffer<ffi::F32>>()  // chunk states: [B, D, chunks, N, 2]
 );
 
 // Internal microbenchmark entry point. It amortizes one JAX dispatch over
@@ -571,6 +592,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<ffi::Buffer<ffi::F32>>()
         .Arg<ffi::Buffer<ffi::F32>>()
         .Arg<ffi::Buffer<ffi::F32>>()
+        .Ret<ffi::Buffer<ffi::F32>>()
         .Ret<ffi::Buffer<ffi::F32>>()
         .Ret<ffi::Buffer<ffi::F32>>()
 );

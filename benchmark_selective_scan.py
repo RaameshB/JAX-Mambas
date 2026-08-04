@@ -45,11 +45,13 @@ def repeated_cuda_scan(*args, launches):
     A, deltas, Bs, Cs, u, initial_x = args
     batch, length, dim = u.shape
     n = A.shape[1]
+    n_chunks = (length + 2047) // 2048
     call = jax.ffi.ffi_call(
         _BENCHMARK_TARGET,
         (
             jax.ShapeDtypeStruct((batch, length, dim), jnp.float32),
             jax.ShapeDtypeStruct((batch, dim, n), jnp.float32),
+            jax.ShapeDtypeStruct((batch, dim, n_chunks, n, 2), jnp.float32),
         ),
         input_layouts=(
             (0, 1),
@@ -59,9 +61,9 @@ def repeated_cuda_scan(*args, launches):
             (0, 2, 1),
             (0, 1, 2),
         ),
-        output_layouts=((0, 2, 1), (0, 1, 2)),
+        output_layouts=((0, 2, 1), (0, 1, 2), (0, 1, 2, 3, 4)),
     )
-    return call(
+    y, final_x, _ = call(
         A,
         deltas,
         Bs,
@@ -75,6 +77,7 @@ def repeated_cuda_scan(*args, launches):
         dim=np.int32(dim),
         dstate=np.int32(n),
     )
+    return y, final_x
 
 
 def make_inputs(batch, length, dim, n):
