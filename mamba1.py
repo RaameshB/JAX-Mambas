@@ -35,6 +35,8 @@ class S6(nnx.Module):
         self.s_B = nnx.Linear(in_features=D, out_features=N, use_bias=False, rngs=rngs, dtype=general_dtype)
         self.s_C = nnx.Linear(in_features=D, out_features=N, use_bias=False, rngs=rngs, dtype=general_dtype)
 
+        self.D = nnx.Param(jnp.ones(1,1,D))
+
         # using the shorthand mappings the paper uses to avoid confusion during implementation
         self.tau_Delta = nnx.softplus
 
@@ -122,6 +124,8 @@ class S6(nnx.Module):
             )
             if self.has_cache:
                 self.state_cache.value = final_x
+
+        ys += self.D * x
 
         return ys if not self.complex_ssm else ys.real
 
