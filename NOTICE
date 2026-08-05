@@ -1,0 +1,11 @@
+JAX-Mambas
+Copyright 2026 Raamesh
+
+The CUDA selective-scan implementation includes a modified implementation of
+the chunking, launch-configuration, and CUB BlockScan strategy from Mamba:
+
+  Mamba: Linear-Time Sequence Modeling with Selective State Spaces
+  Copyright 2023 Tri Dao and Albert Gu
+  https://github.com/state-spaces/mamba
+
+Mamba is licensed under the Apache License, Version 2.0.

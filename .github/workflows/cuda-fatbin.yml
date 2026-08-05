@@ -1,0 +1,67 @@
+name: Build CUDA fat binary
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "cuda-selective-scan"
+      - "cuda-selective-scan-backward"
+    paths:
+      - ".github/workflows/cuda-fatbin.yml"
+      - "native/**"
+      - "../../mamba/selective_scan_cuda.py"
+    tags:
+      - "cuda-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    container: nvidia/cuda:13.3.0-devel-ubuntu22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build environment
+        run: |
+          apt-get update
+          apt-get install --yes ca-certificates curl gcc g++
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Python build dependencies
+        run: |
+          uv venv --python 3.12 .venv
+          uv pip install --python .venv/bin/python "jax==0.7.2" cmake ninja
+
+      - name: Build A100, L4, and G4 fat binary
+        run: |
+          .venv/bin/cmake -S native -B native/build-fat \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_MAKE_PROGRAM="$PWD/.venv/bin/ninja" \
+            -DPython_EXECUTABLE="$PWD/.venv/bin/python" \
+            -DMAMBA_CUDA_ARCHITECTURES="80;89;120"
+          .venv/bin/cmake --build native/build-fat
+          .venv/bin/cmake --install native/build-fat \
+            --prefix dist/JAX-Mambas-cuda13-linux-x86_64
+          cp LICENSE LICENSE-APACHE NOTICE \
+            dist/JAX-Mambas-cuda13-linux-x86_64/
+          tar -C dist -czf dist/JAX-Mambas-cuda13-linux-x86_64.tar.gz \
+            JAX-Mambas-cuda13-linux-x86_64
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: JAX-Mambas-cuda13-linux-x86_64
+          path: dist/JAX-Mambas-cuda13-linux-x86_64.tar.gz
+
+      - name: Attach tagged build to GitHub release
+        if: startsWith(github.ref, 'refs/tags/cuda-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/JAX-Mambas-cuda13-linux-x86_64.tar.gz
