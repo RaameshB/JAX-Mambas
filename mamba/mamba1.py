@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import jax.random as jrand
 from jax import lax
 
-from selective_scan_cuda import selective_scan
+from .selective_scan_cuda import selective_scan
 
 
 def _uniform_initializer(bound):

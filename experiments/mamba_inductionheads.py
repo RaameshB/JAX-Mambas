@@ -1,4 +1,11 @@
 # %%
+from pathlib import Path
+import sys
+
+# A directly run experiment is searched from `experiments/`, rather than the
+# repository root. Add the root so package imports work in Colab as well.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import jax
 from jax import numpy as jnp
 from jax import random
