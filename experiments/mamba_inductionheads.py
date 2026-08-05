@@ -99,7 +99,8 @@ class MambaInductionHeads(nnx.Module):
                 rngs=rngs,
                 use_kernel=True,
                 use_D_Param=False,
-                use_broadcast_Delta=True
+                use_broadcast_Delta=True,
+                use_euler_barB_approx=False
             )
             for _ in range(num_layers)
         ])

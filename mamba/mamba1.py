@@ -149,7 +149,7 @@ class S6(nnx.Module):
             # barBs = jnp.reciprocal(mulDeltaA) * jnp.expm1(mulDeltaA) * jnp.einsum("bld,bln->bldn", Deltas, Bs)
             # slight optimization. we take an elementwise reciprocal of multDeltaA only to multiply by delta again later, so we eliminate the redundancy
             # we're able to do this because we're working with vectors instead of the matrices ZOH was designed for
-            barBs =  jnp.expm1(mulDeltaA) * jnp.einsum("dn,bln->bldn", jnp.reciprocal(A), Bs)
+            barBs = (jnp.expm1(mulDeltaA) / A[None, None, :, :]) * Bs[:, :, None, :]
         return barAs, barBs
 
     def binary_operator(Aht_prev, Aht):
