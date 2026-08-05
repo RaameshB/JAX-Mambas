@@ -2,8 +2,9 @@
 from pathlib import Path
 import sys
 
-# A directly run experiment is searched from `experiments/`, rather than the
-# repository root. Add the root so package imports work in Colab as well.
+# Running this file directly makes Python search `experiments/`, rather than
+# the repository root. Add the root so `mamba.mamba1` resolves in Colab and
+# from any working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import jax
@@ -165,7 +166,7 @@ with Progress(
     TimeRemainingColumn(),
 ) as progress:
     task = progress.add_task(
-        "Training",
+        "Training...",
         total=TRAIN_STEPS,
         epoch=0,
         loss="--",
