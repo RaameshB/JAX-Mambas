@@ -187,6 +187,7 @@ class S6(nnx.Module):
                 initial_x,
                 use_euler_barB_approx=self.euler_barB_approx,
                 use_cuda=self.use_kernel,
+                remat=not self.use_kernel,
             )
             if self.has_cache:
                 self.state_cache.value = final_x

@@ -269,8 +269,14 @@ def selective_scan(
     *,
     use_euler_barB_approx=True,
     use_cuda=False,
+    remat=False,
 ):
-    """Run the reference scan or the optional CUB CUDA implementation."""
+    """Run the reference scan or the optional CUB CUDA implementation.
+
+    ``remat`` applies only to the reference implementation.  It checkpoints the
+    whole scan-and-output computation, so reverse-mode reconstructs its
+    per-token states rather than retaining them as a backward residual.
+    """
     if initial_x is None:
         initial_x = jnp.zeros(
             (u.shape[0], u.shape[2], A.shape[1]), dtype=jnp.result_type(A, u)
@@ -279,6 +285,18 @@ def selective_scan(
         return _selective_scan_cuda(
             A, deltas, Bs, Cs, u, initial_x, use_euler_barB_approx
         )
+    if remat:
+        return jax.checkpoint(
+            lambda A, deltas, Bs, Cs, u, initial_x: selective_scan_reference(
+                A,
+                deltas,
+                Bs,
+                Cs,
+                u,
+                initial_x,
+                use_euler_barB_approx=use_euler_barB_approx,
+            )
+        )(A, deltas, Bs, Cs, u, initial_x)
     return selective_scan_reference(
         A,
         deltas,
