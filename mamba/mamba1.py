@@ -306,6 +306,10 @@ class Mamba(nnx.Module):
             conv_input = projed
 
         conved = self.sigma(self.conv(conv_input)[:, -projed.shape[1]:])
+
+        if padding_mask is not None:
+            conved *= padding_mask
+
         ssm_out = self.s6(conved, padding_mask)
         muled = ssm_out * skip
         logits = self.proj_down(muled)

@@ -94,14 +94,16 @@ class MambaInductionHeads(nnx.Module):
             Mamba(
                 D=D,
                 N=16,
-                R=16,
+                R=4,
                 expand=expand,
                 rngs=rngs,
                 use_kernel=True,
+                num_layers=num_layers,
+                norm_type='rmsnorm'
             )
             for _ in range(num_layers)
         ])
-        self.final_norm = nnx.LayerNorm(D, epsilon=1e-5, rngs=rngs)
+        self.final_norm = nnx.RMSNorm(D, epsilon=1e-5, rngs=rngs)
         self.proj_down = nnx.Linear(
             in_features=D,
             out_features=vocab_size,
@@ -117,7 +119,7 @@ class MambaInductionHeads(nnx.Module):
         return self.proj_down(self.final_norm(hidden))
 
 # %%
-rngs = nnx.Rngs(0)
+rngs = nnx.Rngs(47)
 model = MambaInductionHeads(rngs=rngs)
 graphdef, params = nnx.split(model, nnx.Param)
 optimizer = optax.adam(learning_rate=LR)
@@ -130,7 +132,7 @@ def train_step(rngs, graphdef, params, opt_state):
         logits = model(inputs, padding_mask)[:,-1]
         loss = jnp.mean(optax.losses.safe_softmax_cross_entropy(logits, labels))
         return loss
-    batch_x, batch_y, padding_mask = create_batch(rngs.inputs(), bsz=BSZ, min_seq_len=160)
+    batch_x, batch_y, padding_mask = create_batch(rngs.inputs(), bsz=BSZ)
     loss, grads = jax.value_and_grad(compute_loss)(params, batch_x, batch_y, padding_mask)
     updates, opt_state = optimizer.update(grads, opt_state, params=params)
     params = optax.apply_updates(params, updates)
@@ -143,7 +145,7 @@ def train_step(rngs, graphdef, params, opt_state):
 def validation_step(batch_rng, graphdef, params):
     batch_x, batch_y, padding_mask = create_batch(
         batch_rng,
-        bsz=BSZ,
+        bsz=48,
         seq_len=VALIDATION_LENGTH,
         min_seq_len=VALIDATION_LENGTH,
     )
@@ -159,7 +161,7 @@ validation_rng = random.key(1)
 with Progress(
     TextColumn("[progress.description]{task.description}"),
     BarColumn(),
-    TextColumn("Epoch {task.fields[epoch]:>6}/{task.total}"),
+    TextColumn("Step {task.fields[epoch]:>6}/{task.total}"),
     TextColumn("Loss {task.fields[loss]}"),
     TextColumn("Val@8192 {task.fields[validation]}"),
     TimeElapsedColumn(),
