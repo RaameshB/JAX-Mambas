@@ -16,10 +16,11 @@ _REGISTERED = False
 
 
 def _library_candidates():
-    root = Path(__file__).resolve().parent
-    yield root / "native" / "build" / "libmamba_selective_scan.so"
-    yield root / "native" / "prebuilt" / "libmamba_selective_scan.so"
-    yield root / "native" / "libmamba_selective_scan.so"
+    repository_root = Path(__file__).resolve().parents[1]
+    native_root = repository_root / "native"
+    yield native_root / "build" / "libmamba_selective_scan.so"
+    yield native_root / "prebuilt" / "libmamba_selective_scan.so"
+    yield native_root / "libmamba_selective_scan.so"
 
 
 def register_cuda_kernel(library_path: str | Path | None = None):
