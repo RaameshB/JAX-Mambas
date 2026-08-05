@@ -67,11 +67,10 @@ class S6(nnx.Module):
             dtype=general_dtype,
         )
 
+        self.use_D_param = use_D_Param
         if use_D_Param:
             # Like A_log, the intra-SSM skip parameter is always float32.
             self.D = nnx.Param(jnp.ones((D,), dtype=jnp.float32))
-        else:
-            self.D = nnx.Variable(jnp.zeros(shape=(D,), dtype=jnp.float32))
 
         # using the shorthand mappings the paper uses to avoid confusion during implementation
         self.tau_Delta = nnx.softplus
@@ -192,7 +191,8 @@ class S6(nnx.Module):
             if self.has_cache:
                 self.state_cache.value = final_x
 
-        ys += self.D * x
+        if self.use_D_param:
+            ys += self.D * x
 
         return ys.astype(x.dtype) if not self.complex_ssm else ys.real
 
