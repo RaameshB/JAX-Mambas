@@ -98,7 +98,6 @@ class MambaInductionHeads(nnx.Module):
                 expand=expand,
                 rngs=rngs,
                 use_kernel=True,
-                use_norm=False,
                 use_D_Param=False,
                 use_broadcast_Delta=True
             )
