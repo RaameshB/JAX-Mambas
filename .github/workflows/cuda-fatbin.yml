@@ -5,9 +5,10 @@ on:
   push:
     branches:
       - "cuda-selective-scan"
+      - "cuda-selective-scan-backward"
     paths:
-      - "native/CMakeLists.txt"
-      - "native/*.cu"
+      - ".github/workflows/cuda-fatbin.yml"
+      - "native/**"
       - "selective_scan_cuda.py"
     tags:
       - "cuda-v*"
