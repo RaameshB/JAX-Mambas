@@ -90,7 +90,7 @@ class S6(nnx.Module):
             return inv_dt.astype(dtype)
 
         if R == "auto":
-            R = max(1, (D + 15) // 16)
+            R = max(1, (D + 15) // 16) if not use_broadcast_Delta else 1
 
         if R < 1:
             raise ValueError("R must be 1 or greater.")
