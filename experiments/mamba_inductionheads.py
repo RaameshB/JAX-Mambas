@@ -120,8 +120,7 @@ class MambaInductionHeads(nnx.Module):
 rngs = nnx.Rngs(0)
 model = MambaInductionHeads(rngs=rngs)
 graphdef, params = nnx.split(model, nnx.Param)
-# optimizer = optax.adam(learning_rate=LR)
-optimizer = optax.contrib.cocob()
+optimizer = optax.adam(learning_rate=LR)
 opt_state = optimizer.init(params)
 # %%
 @nnx.jit
@@ -131,7 +130,7 @@ def train_step(rngs, graphdef, params, opt_state):
         logits = model(inputs, padding_mask)[:,-1]
         loss = jnp.mean(optax.losses.safe_softmax_cross_entropy(logits, labels))
         return loss
-    batch_x, batch_y, padding_mask = create_batch(rngs.inputs(), bsz=BSZ)
+    batch_x, batch_y, padding_mask = create_batch(rngs.inputs(), bsz=BSZ, min_seq_len=160)
     loss, grads = jax.value_and_grad(compute_loss)(params, batch_x, batch_y, padding_mask)
     updates, opt_state = optimizer.update(grads, opt_state, params=params)
     params = optax.apply_updates(params, updates)
