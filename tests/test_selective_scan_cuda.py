@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from selective_scan_cuda import selective_scan, selective_scan_reference
+from mamba.selective_scan_cuda import selective_scan, selective_scan_reference
 
 
 def inputs(batch=2, length=17, dim=8, n=16):

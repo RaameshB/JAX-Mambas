@@ -1,27 +1,23 @@
-
-# %%
-import sys
-sys.path.append("/content/JAX-Mambas")
 # %%
 import jax
 from jax import numpy as jnp
 from jax import random
 from functools import partial
 from flax import nnx
-from mamba1 import Mamba
+from mamba.mamba1 import Mamba
 import optax
-from rich.progress import Progress
-from icecream import ic
-# %%
-import jax
-print(jax.__version__)
-print(jax.devices())
+from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn, TimeRemainingColumn
 
 
 # %%
 LR = 1e-3
 BSZ = 8
 TRAIN_STEPS = 204800
+VALIDATION_INTERVAL = 8192
+VALIDATION_LENGTH = 8192
+# Converting a JAX scalar to Python synchronizes the device, so refresh the
+# displayed training loss periodically instead of on every asynchronous step.
+LOSS_DISPLAY_INTERVAL = 128
 
 
 # %%
@@ -131,13 +127,60 @@ def train_step(rngs, graphdef, params, opt_state):
     updates, opt_state = optimizer.update(grads, opt_state, params=params)
     params = optax.apply_updates(params, updates)
     return params, opt_state, loss
+
+
+# This is deliberately separate from train_step: it gets its own compilation
+# for the longer sequence shape and never contributes gradients or updates.
+@nnx.jit
+def validation_step(batch_rng, graphdef, params):
+    batch_x, batch_y, padding_mask = create_batch(
+        batch_rng,
+        bsz=BSZ,
+        seq_len=VALIDATION_LENGTH,
+        min_seq_len=VALIDATION_LENGTH,
+    )
+    model = nnx.merge(graphdef, params)
+    logits = model(batch_x, padding_mask)[:, -1]
+    loss = jnp.mean(optax.losses.safe_softmax_cross_entropy(logits, batch_y))
+    accuracy = jnp.mean(jnp.argmax(logits, axis=-1) == jnp.argmax(batch_y, axis=-1))
+    return loss, accuracy
+
+
 # %%
-with Progress() as progress:
-    task = progress.add_task('Training...', total=TRAIN_STEPS)
+validation_rng = random.key(1)
+with Progress(
+    TextColumn("[progress.description]{task.description}"),
+    BarColumn(),
+    TextColumn("Epoch {task.fields[epoch]:>6}/{task.total}"),
+    TextColumn("Loss {task.fields[loss]}"),
+    TextColumn("Val@8192 {task.fields[validation]}"),
+    TimeElapsedColumn(),
+    TimeRemainingColumn(),
+) as progress:
+    task = progress.add_task(
+        "Training",
+        total=TRAIN_STEPS,
+        epoch=0,
+        loss="--",
+        validation="--",
+    )
     for step in range(TRAIN_STEPS):
         params, opt_state, loss = train_step(rngs, graphdef, params, opt_state)
-        progress.advance(task)
-print(f'Final Loss: {loss}')
+        epoch = step + 1
+        fields = {"epoch": epoch}
+        if epoch % LOSS_DISPLAY_INTERVAL == 0 or epoch == TRAIN_STEPS:
+            fields["loss"] = f"{float(loss):.6g}"
+        if epoch % VALIDATION_INTERVAL == 0:
+            validation_rng, batch_rng = random.split(validation_rng)
+            validation_loss, validation_accuracy = validation_step(
+                batch_rng, graphdef, params
+            )
+            fields["validation"] = (
+                f"loss={float(validation_loss):.6g}, "
+                f"acc={float(validation_accuracy):.2%}"
+            )
+        progress.update(task, advance=1, **fields)
+print(f"Final Loss: {float(loss):.6g}")
 
 # %%
 model = nnx.merge(graphdef, params)

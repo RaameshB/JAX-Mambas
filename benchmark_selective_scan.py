@@ -5,8 +5,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-import selective_scan_cuda as scan_cuda
-from selective_scan_cuda import selective_scan
+from mamba import selective_scan_cuda as scan_cuda
+from mamba.selective_scan_cuda import selective_scan
 
 
 _BENCHMARK_TARGET = "mamba_selective_scan_cuda_benchmark"
