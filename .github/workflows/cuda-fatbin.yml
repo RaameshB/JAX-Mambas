@@ -9,7 +9,7 @@ on:
     paths:
       - ".github/workflows/cuda-fatbin.yml"
       - "native/**"
-      - "selective_scan_cuda.py"
+      - "../../mamba/selective_scan_cuda.py"
     tags:
       - "cuda-v*"
 
