@@ -24,7 +24,7 @@ class S6(nnx.Module):
     def __init__(self, rngs:nnx.Rngs, D, N:int=16, R:int | str="auto",
                  complex_ssm:bool=False, use_euler_barB_approx:bool=True,
                  use_log_A_stability_trick:bool=True, use_bf16=False,
-                 kernel_len:int=512, use_kernel:bool=False):
+                 kernel_len:int=512, use_kernel:bool=False, use_D_Param=True, use_broadcast_Delta=False):
 
         # Kept for compatibility with Mamba's current constructor. The scan
         # implementation does not chunk the sequence.
@@ -67,8 +67,11 @@ class S6(nnx.Module):
             dtype=general_dtype,
         )
 
-        # Like A_log, the intra-SSM skip parameter is always float32.
-        self.D = nnx.Param(jnp.ones((D,), dtype=jnp.float32))
+        if use_D_Param:
+            # Like A_log, the intra-SSM skip parameter is always float32.
+            self.D = nnx.Param(jnp.ones((D,), dtype=jnp.float32))
+        else:
+            self.D = nnx.Variable(jnp.zeros(shape=(D,), dtype=jnp.float32))
 
         # using the shorthand mappings the paper uses to avoid confusion during implementation
         self.tau_Delta = nnx.softplus
@@ -92,25 +95,37 @@ class S6(nnx.Module):
 
         if R < 1:
             raise ValueError("R must be 1 or greater.")
+        elif use_broadcast_Delta and R==1:
+            self.Linear_Delta = nnx.Linear(
+                in_features=D,
+                out_features=1,
+                use_bias=True,
+                kernel_init=_uniform_initializer(R ** -0.5),
+                bias_init=s_Delta_bias_initializer,
+                rngs=rngs,
+                dtype=real_dtype,
+            )
+            self.biased_s_Delta = lambda x: jnp.broadcast_to(self.Linear_Delta(x), x.shape[:2]+(D,))
+        else:
+            self.Linear_R = nnx.Linear(
+                in_features=D,
+                out_features=R,
+                use_bias=False,
+                kernel_init=x_proj_kernel_init,
+                rngs=rngs,
+                dtype=real_dtype,
+            )
+            self.Linear_Delta = nnx.Linear(
+                in_features=R,
+                out_features=D,
+                use_bias=True,
+                kernel_init=_uniform_initializer(R ** -0.5),
+                bias_init=s_Delta_bias_initializer,
+                rngs=rngs,
+                dtype=real_dtype,
+            )
+            self.biased_s_Delta = lambda x: self.Linear_Delta(self.Linear_R(x))
         self.R = R
-        self.Linear_R = nnx.Linear(
-            in_features=D,
-            out_features=R,
-            use_bias=False,
-            kernel_init=x_proj_kernel_init,
-            rngs=rngs,
-            dtype=real_dtype,
-        )
-        self.Linear_Delta = nnx.Linear(
-            in_features=R,
-            out_features=D,
-            use_bias=True,
-            kernel_init=_uniform_initializer(R ** -0.5),
-            bias_init=s_Delta_bias_initializer,
-            rngs=rngs,
-            dtype=real_dtype,
-        )
-        self.biased_s_Delta = lambda x: self.Linear_Delta(self.Linear_R(x))
 
         self.complex_ssm = complex_ssm
 
