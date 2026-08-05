@@ -120,7 +120,8 @@ class MambaInductionHeads(nnx.Module):
 rngs = nnx.Rngs(0)
 model = MambaInductionHeads(rngs=rngs)
 graphdef, params = nnx.split(model, nnx.Param)
-optimizer = optax.adam(learning_rate=LR)
+# optimizer = optax.adam(learning_rate=LR)
+optimizer = optax.contrib.cocob()
 opt_state = optimizer.init(params)
 # %%
 @nnx.jit
@@ -201,42 +202,36 @@ correct_proportion = jnp.sum(logits==reference)/num_samples
 print(f'Training Accuracy: {correct_proportion*100:.2f}')
 
 # %%
-num_samples = 128
 batch, labels, paddings = create_batch(rngs.inputs(), bsz=num_samples, seq_len=256)
 logits = jnp.argmax(model(batch, paddings)[:,-1], axis=-1)
 reference = jnp.argmax(labels, axis=-1)
 correct_proportion = jnp.sum(logits==reference)/num_samples
 print(f'Seq Len 256 Accuracy: {correct_proportion*100:.2f}')
 # %%
-num_samples = 128
 batch, labels, paddings = create_batch(rngs.inputs(), bsz=num_samples, seq_len=512)
 logits = jnp.argmax(model(batch, paddings)[:,-1], axis=-1)
 reference = jnp.argmax(labels, axis=-1)
 correct_proportion = jnp.sum(logits==reference)/num_samples
 print(f'Seq Len 512 Accuracy: {correct_proportion*100:.2f}')
 # %%
-num_samples = 128
 batch, labels, paddings = create_batch(rngs.inputs(), bsz=num_samples, seq_len=1024)
 logits = jnp.argmax(model(batch, paddings)[:,-1], axis=-1)
 reference = jnp.argmax(labels, axis=-1)
 correct_proportion = jnp.sum(logits==reference)/num_samples
 print(f'Seq Len 1024 Accuracy: {correct_proportion*100:.2f}')
 # %%
-num_samples = 128
 batch, labels, paddings = create_batch(rngs.inputs(), bsz=num_samples, seq_len=2048)
 logits = jnp.argmax(model(batch, paddings)[:,-1], axis=-1)
 reference = jnp.argmax(labels, axis=-1)
 correct_proportion = jnp.sum(logits==reference)/num_samples
 print(f'Seq Len 2048 Accuracy: {correct_proportion*100:.2f}')
 # %%
-num_samples = 128
 batch, labels, paddings = create_batch(rngs.inputs(), bsz=num_samples, seq_len=4096)
 logits = jnp.argmax(model(batch, paddings)[:,-1], axis=-1)
 reference = jnp.argmax(labels, axis=-1)
 correct_proportion = jnp.sum(logits==reference)/num_samples
 print(f'Seq Len 4096 Accuracy: {correct_proportion*100:.2f}')
 # %%
-num_samples = 128
 batch, labels, paddings = create_batch(rngs.inputs(), bsz=num_samples, seq_len=8192)
 logits = jnp.argmax(model(batch, paddings)[:,-1], axis=-1)
 reference = jnp.argmax(labels, axis=-1)
