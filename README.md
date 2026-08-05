@@ -20,9 +20,6 @@ Likely order of implementation:
   - [ ] Stability Tricks
   - [ ] Pallas Kernel
 
-### Notes:
-- Models will be called "naive" when they are implemented without their kernels
-
 ## Experimental CUDA selective scan
 
 Mamba-1 has an optional float32 CUDA forward and backward path implemented with
