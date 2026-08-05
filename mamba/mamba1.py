@@ -222,7 +222,8 @@ class Mamba(nnx.Module):
                     use_kernel=False,
                     num_layers:int=1,
                     use_euler_barB_approx:bool=True, complex_ssm:bool=False,
-                    use_log_A_stability_trick:bool=True, bf16=False):
+                    use_log_A_stability_trick:bool=True, bf16=False,
+                    use_D_Param=True, use_broadcast_Delta=False):
         dtype = jnp.bfloat16 if bf16 else jnp.float32
         if R == "auto":
             # The reference computes dt_rank from d_model, not d_inner.
@@ -255,7 +256,8 @@ class Mamba(nnx.Module):
         self.s6 = S6(rngs, D*expand, N=N, R=R, kernel_len=kernel_len,
                      use_kernel=use_kernel,
                      use_euler_barB_approx=use_euler_barB_approx, complex_ssm=complex_ssm,
-                     use_log_A_stability_trick=use_log_A_stability_trick, use_bf16=bf16)
+                     use_log_A_stability_trick=use_log_A_stability_trick, use_bf16=bf16,
+                     use_D_Param=use_D_Param, use_broadcast_Delta=use_broadcast_Delta)
         self.proj_down = nnx.Linear(
             in_features=D*expand,
             out_features=D,
