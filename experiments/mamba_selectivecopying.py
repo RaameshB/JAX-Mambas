@@ -18,9 +18,9 @@ from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn, Ti
 
 
 # %%
-LR = 1e-3
-BSZ = 8
-TRAIN_STEPS = 204800
+LR = 1e-4
+BSZ = 64
+TRAIN_STEPS = 400 * 10**3
 VALIDATION_INTERVAL = 8192
 VALIDATION_LENGTH = 8192
 # Converting a JAX scalar to Python synchronizes the device, so refresh the
@@ -76,7 +76,7 @@ class MambaSelectiveCopying(nnx.Module):
                 use_kernel=True,
                 use_D_Param=False,
                 use_broadcast_Delta=True,
-                use_euler_barB_approx=False
+                use_euler_barB_approx=True
             )
             for _ in range(num_layers)
         ])
@@ -122,7 +122,7 @@ def train_step(rngs, graphdef, params, opt_state):
 def validation_step(batch_rng, graphdef, params):
     batch_x, batch_y = create_batch(
         batch_rng,
-        bsz=48,
+        bsz=64,
         seq_len=VALIDATION_LENGTH
     )
     model = nnx.merge(graphdef, params)
