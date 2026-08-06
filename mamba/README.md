@@ -13,7 +13,9 @@ a serial loop over sequence chunks, and affine scans inside each chunk.
 ## Mamba Kernel
 
 In case you can't use the precompiled kernel that targets the G4, L4, and A100, build the shared library using the Python environment that contains JAX:
-Note: All of these should be run from the repo root.
+
+> [!NOTE]
+> All of these should be run from the repo root.
 
 ```bash
 cmake -S native -B native/build \
@@ -59,7 +61,7 @@ timed region; both paths used the same parameters and batch.
 
 On a Colab L4 at `B=1, D=256, N=16`, the CUDA forward path was approximately
 at parity with `lax.associative_scan` for lengths 512 and 2048, and 2.0x faster
-at length 8192. Run `python benchmark_selective_scan.py` to benchmark locally.
+at length 8192. Run `python benchmarks/benchmark_selective_scan.py` to benchmark locally.
 
 Against Mamba v2.3.2's official float32 forward kernel on an A100-SXM4-40GB
 (`B=1, D=256, N=16`), end-to-end framework call latency is:
