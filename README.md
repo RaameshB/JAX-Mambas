@@ -39,7 +39,7 @@ a serial loop over sequence chunks, and affine scans inside each chunk.
 
 ## Mamba-1 Kernel
 
-Build the shared library using the Python environment that contains JAX:
+In case you can't use the prebuilt kernel for the G4, L4, or A100, build the shared library using the Python environment that contains JAX:
 
 ```bash
 cmake -S native -B native/build \
