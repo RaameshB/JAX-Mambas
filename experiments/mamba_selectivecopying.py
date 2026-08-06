@@ -123,8 +123,7 @@ def validation_step(batch_rng, graphdef, params):
     batch_x, batch_y = create_batch(
         batch_rng,
         bsz=48,
-        seq_len=VALIDATION_LENGTH,
-        min_seq_len=VALIDATION_LENGTH,
+        seq_len=VALIDATION_LENGTH
     )
     model = nnx.merge(graphdef, params)
     logits = model(batch_x)[:,-VOCAB_SIZE]
