@@ -5,17 +5,21 @@ Likely order of implementation:
 2. Stability tricks used in the official repos (may or may not get all of them)
 3. Pallas implementations of their CUDA kernels
 
+## Implementation Methodology:
+The actual code for training and the S6 and Mamba blocks are mostly done by me, by hand referencing the original repo, the paper, combined with minimal use of GPT 5.6 Sol in ChatGPT and Codex. The selective scan kernel was rebound to JAX using 5.6 Sol within Codex, with me providing the reference lax.associative scan implementation with remat.
+
 ## Implementation Progress:
 - [x] [Mamba](https://arxiv.org/abs/2312.00752):
   - [x] Mathematical Form
   - [x] Stability Tricks
   - [x] ~~Pallas~~ _CUDA_ Kernel (Pallas doesn't really offer a good blocked prefix scan and attempts to write a custom one have not gone well)
   - [x] LayerNorm/RMSNorm and added variable length sequence padding support
+  - [x] Induction Heads replication
 - [ ] [Mamba-2](https://arxiv.org/abs/2405.21060):
   - [ ] Mathematical Form
   - [ ] Stability Tricks
   - [ ] Pallas Kernel
-- [ ] [Mamba-3](https://arxiv.org/abs/2405.21060):
+- [ ] [Mamba-3](https://arxiv.org/abs/2603.15569):
   - [ ] Mathematical Form
   - [ ] Stability Tricks
   - [ ] Pallas Kernel
@@ -26,6 +30,12 @@ Mamba-1 has an optional float32 CUDA forward and backward path implemented with
 JAX FFI and CUB `BlockScan`. It adapts Mamba v2.3.2's selective-scan kernels to
 JAX's layouts and custom-VJP interface: one CUDA block per batch/channel pair,
 a serial loop over sequence chunks, and affine scans inside each chunk.
+
+## Tasks on hold
+
+- All LM tasks - I don't have the money to train a language model unfortunately
+- Mamba-1 selective copying - would take over a day of training with my current setup, I cannot afford this either.
+  - There is a semi-complete version of my selective copying code somewhere buried in the dev commits, but it's guaranteed to error but I'm pretty sure the config will work if the bugs are fixed. Been removed from the repo because it's not complete, might add it back in via its own branch later.
 
 Build the shared library using the Python environment that contains JAX:
 
@@ -63,7 +73,7 @@ states and the returned final state. ZOH-mode reverse differentiation falls
 back to the JAX reference because the original Mamba backward kernel implements
 the Euler approximation only.
 
-In a steady-state Colab G4 benchmark shaped like the induction-heads notebook
+In a steady-state Colab G4 benchmark with hyperparms
 (`B=8`, `L=256`, `D=64`, two Mamba layers, `expand=2`, `N=16`, `R=16`), the
 fully JIT-compiled loss-and-gradient call took 1.132 ms with the CUDA forward
 and backward kernels versus 1.600 ms with the JIT-compiled JAX reference scan.
@@ -94,7 +104,7 @@ kernel 100 times behind one framework call and divides the elapsed time by 100:
 | 2048 | 0.0560 ms | 0.0510 ms | 9.8% slower |
 | 8192 | 0.1584 ms | 0.1502 ms | 5.5% slower |
 
-Both paths used float32 Euler discretization and zero initial state. GPU
+Both paths used float32 Exponential-Euler discretization and zero initial state. GPU
 correctness and gradient tests pass, including nonzero initial states and
 sequences spanning multiple chunks. The isolated result shows that most of the
 apparent end-to-end gap is outside the CUDA kernel itself.
