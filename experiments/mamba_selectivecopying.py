@@ -107,7 +107,7 @@ def train_step(rngs, graphdef, params, opt_state):
     def compute_loss(params, inputs, labels):
         model = nnx.merge(graphdef, params)
         logits = model(inputs)[:,-VOCAB_SIZE]
-        loss = jnp.mean(optax.losses.safe_softmax_cross_entropy(logits, labels))
+        loss = jnp.mean(nnx.vmap(lambda logit, label: jnp.mean(optax.losses.safe_softmax_cross_entropy(logit, label)))(logits, labels))
         return loss
     batch_x, batch_y = create_batch(rngs.inputs(), bsz=BSZ)
     loss, grads = jax.value_and_grad(compute_loss)(params, batch_x, batch_y)
