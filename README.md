@@ -6,7 +6,7 @@ Likely order of implementation:
 3. Pallas implementations of their CUDA kernels
 
 ## Implementation Methodology:
-The actual code for training and the S6 and Mamba blocks are mostly done by me, by hand referencing the original repo, the paper, combined with minimal use of GPT 5.6 Sol in ChatGPT and Codex. The selective scan kernel was rebound to JAX using 5.6 Sol within Codex, with me providing the reference lax.associative scan implementation with remat.
+The actual code for training and the S6 and Mamba blocks are mostly done by me, by hand referencing the original repo, the paper, combined with minimal use of GPT 5.6 Sol in ChatGPT and Codex for debugging. The selective scan kernel was rebound to JAX using 5.6 Sol within Codex, with me providing the reference lax.associative scan implementation with remat to benchmark and verify against.
 
 ## Implementation Progress:
 - [x] [Mamba](https://arxiv.org/abs/2312.00752):
