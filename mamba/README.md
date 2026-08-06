@@ -1,7 +1,7 @@
 # Mamba
 This is a Flax NNX implementation of the original Mamba
 ## Implementation Methodology:
-The actual code for training and the S6 and Mamba blocks are mostly done by me, by hand referencing the original repo, the paper, combined with minimal use of GPT 5.6 Sol in ChatGPT and Codex for debugging. The selective scan kernel was rebound to JAX using 5.6 Sol within Codex, with me providing the reference lax.associative scan implementation with remat to benchmark and verify against.
+The actual code for training and the S6 and Mamba blocks are mostly done by me, by hand referencing the original repo, the paper, combined with minimal use of GPT 5.6 Sol in ChatGPT and Codex for debugging. The selective scan kernel was rebound to JAX using GPT 5.6 Sol within Codex, with me providing the reference lax.associative scan implementation with remat to benchmark and verify against.
 
 ## Experimental CUDA selective scan
 
