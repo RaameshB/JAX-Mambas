@@ -37,7 +37,7 @@ a serial loop over sequence chunks, and affine scans inside each chunk.
 - Mamba-1 selective copying - would take over a day of training with my current setup, I cannot afford this either.
   - There is a semi-complete version of my selective copying code somewhere buried in the dev commits, but it's guaranteed to error but I'm pretty sure the config will work if the bugs are fixed. Been removed from the repo because it's not complete, might add it back in via its own branch later.
 
-# Mamba-1 Kernel
+## Mamba-1 Kernel
 
 Build the shared library using the Python environment that contains JAX:
 
