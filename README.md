@@ -1,16 +1,16 @@
 # JAX-Mambas
-This is a repo where I (attempt to) implement all of the 3 major Mamba varients in JAX + Flax's NNX API. 
+This is a repo where I (attempt to) implement all of the 3 major Mamba variants in JAX + Flax's NNX API. 
 Likely order of implementation:
 1. Pure mathematical formulations as described in the papers
 2. Stability tricks used in the official repos (may or may not get all of them)
 3. Pallas implementations of their CUDA kernels
 
 ## Implementation Progress:
-- [ ] [Mamba](https://arxiv.org/abs/2312.00752):
+- [x] [Mamba](https://arxiv.org/abs/2312.00752):
   - [x] Mathematical Form
   - [x] Stability Tricks
-  - [ ] ~~Pallas~~ _CUDA_ Kernel (Pallas doesn't really offer a good blocked prefix scan and attempts to write a custom one have not gone well)
-  - [ ] LayerNorm/RMSNorm and also need to add variable length sequence padding support
+  - [x] ~~Pallas~~ _CUDA_ Kernel (Pallas doesn't really offer a good blocked prefix scan and attempts to write a custom one have not gone well)
+  - [x] LayerNorm/RMSNorm and added variable length sequence padding support
 - [ ] [Mamba-2](https://arxiv.org/abs/2405.21060):
   - [ ] Mathematical Form
   - [ ] Stability Tricks
@@ -19,9 +19,6 @@ Likely order of implementation:
   - [ ] Mathematical Form
   - [ ] Stability Tricks
   - [ ] Pallas Kernel
-
-### Notes:
-- Models will be called "naive" when they are implemented without their kernels
 
 ## Experimental CUDA selective scan
 
