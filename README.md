@@ -1,5 +1,5 @@
 # JAX-Mambas
-This is a repo where I (attempt to) implement all of the 3 major Mamba variants in JAX + Flax's NNX API. 
+This is a repo where I (attempt to) implement all the 3 major Mamba variants in JAX + Flax's NNX API. 
 Likely order of implementation:
 1. Pure mathematical formulations as described in the papers
 2. Stability tricks used in the official repos (may or may not get all of them)

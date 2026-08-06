@@ -13,7 +13,9 @@ a serial loop over sequence chunks, and affine scans inside each chunk.
 ## Mamba Kernel
 
 In case you can't use the precompiled kernel that targets the G4, L4, and A100, build the shared library using the Python environment that contains JAX:
-Note: All of these should be run from the repo root.
+
+> [!NOTE]
+> All of these should be run from the repo root.
 
 ```bash
 cmake -S native -B native/build \
