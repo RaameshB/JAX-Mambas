@@ -59,9 +59,22 @@ That is 1.42x the throughput (42% more loss/gradient evaluations per second),
 or 29% lower latency. Compilation and optimizer updates were excluded from the
 timed region; both paths used the same parameters and batch.
 
-On a Colab L4 at `B=1, D=256, N=16`, the CUDA forward path was approximately
-at parity with `lax.associative_scan` for lengths 512 and 2048, and 2.0x faster
-at length 8192. Run `python benchmarks/benchmark_selective_scan.py` to benchmark locally.
+On a Colab A100 with CUDA 13 / JAX 0.11, the following Euler forward-only
+benchmark compares JIT-compiled `lax.associative_scan` with the JIT-compiled
+CUDA FFI path at `B=8, D=64, N=16`. Timings are the mean of 20 steady-state
+calls (compilation excluded) and therefore include ordinary JAX dispatch and
+synchronization overhead.
+
+| Length | JAX scan | CUDA scan | JAX throughput | CUDA throughput | Throughput gain |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 256 | 0.202 ms | 0.169 ms | 10.1M tokens/s | 12.1M tokens/s | 1.20x |
+| 2048 | 0.540 ms | 0.301 ms | 30.3M tokens/s | 54.4M tokens/s | 1.79x |
+| 8192 | 1.115 ms | 0.636 ms | 58.8M tokens/s | 103.0M tokens/s | 1.75x |
+
+The benchmark also measures an optional 100-launch amortized CUDA timing to
+separate kernel work from framework dispatch. Run
+`python benchmarks/benchmark_selective_scan.py` from the repository root to
+reproduce it locally.
 
 Against Mamba v2.3.2's official float32 forward kernel on an A100-SXM4-40GB
 (`B=1, D=256, N=16`), end-to-end framework call latency is:
